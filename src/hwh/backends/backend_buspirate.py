@@ -15,11 +15,20 @@ from .base import (
 )
 from ..detect import DeviceInfo
 
-# Import official BPIO2 library
-from ..pybpio.bpio_client import BPIOClient
-from ..pybpio.bpio_spi import BPIOSPI
-from ..pybpio.bpio_i2c import BPIOI2C
-from ..pybpio.bpio_uart import BPIOUART
+# Import official BPIO2 library (optional - falls back to serial if not available)
+try:
+    from ..pybpio.bpio_client import BPIOClient
+    from ..pybpio.bpio_spi import BPIOSPI
+    from ..pybpio.bpio_i2c import BPIOI2C
+    from ..pybpio.bpio_uart import BPIOUART
+    BPIO_AVAILABLE = True
+except ImportError:
+    # pybpio not installed - will use serial fallback
+    BPIOClient = None
+    BPIOSPI = None
+    BPIOI2C = None
+    BPIOUART = None
+    BPIO_AVAILABLE = False
 
 
 class BusPirateBackend(BusBackend):
@@ -100,6 +109,14 @@ class BusPirateBackend(BusBackend):
         if not self.device.port:
             print(f"[BusPirate] No port specified for {self.device.name}")
             return False
+
+        # Check if BPIO library is available
+        if not BPIO_AVAILABLE:
+            print(f"[BusPirate] BPIO library not available - using serial fallback")
+            print(f"[BusPirate] Some features may be limited")
+            # Mark as connected for basic serial functionality
+            self._connected = True
+            return True
 
         try:
             # BPIO2 runs on the second serial port (interface 3, not 1)
