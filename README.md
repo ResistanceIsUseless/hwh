@@ -1,5 +1,9 @@
 # hwh - Hardware Hacking Toolkit
 
+<p align="center">
+  <img src="hwh.png" alt="hwh mascot" width="400">
+</p>
+
 A multi-device TUI (Terminal User Interface) for hardware security research. Control multiple hardware hacking tools simultaneously from a single interface.
 
 ## Features
@@ -150,5 +154,5 @@ MIT License - see [LICENSE](LICENSE) for details.
 ## Credits
 
 - TUI framework: [Textual](https://textual.textualize.io/)
-- Design inspiration: [glitch-o-bolt](https://github.com/0xRoM/glitch-o-bolt)
+- Design inspiration: [glitch-o-bolt](https://rossmarks.uk/git/0xRoM/glitch-o-bolt)
 - Color scheme: Metagross Pokemon colors
