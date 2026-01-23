@@ -13,6 +13,7 @@ A multi-device TUI (Terminal User Interface) for hardware security research. Con
 - **Split View** - Monitor multiple devices side-by-side
 - **SUMP Protocol** - Built-in logic analyzer support
 - **Glitch Profiles** - Pre-configured parameters for common targets
+- **Firmware Analysis** - Extract, navigate, and search firmware for vulnerabilities
 
 ## Supported Devices
 
@@ -89,10 +90,44 @@ hwh glitch sweep --device "Curious Bolt" --width 100-500 --offset 0-1000
 | Key | Action |
 |-----|--------|
 | `d` | Go to Devices tab |
+| `f` | Go to Firmware tab |
 | `s` | Toggle split view |
 | `q` | Quit |
 | `?` | Show help |
 | `Tab` | Switch between panels |
+
+## Firmware Analysis
+
+The Firmware tab provides tools for analyzing firmware images without requiring hardware:
+
+### Features
+- **Extraction** - Scan and extract SquashFS, JFFS2, UBIFS, CPIO filesystems
+- **File Browser** - Navigate extracted filesystem with tree view
+- **Security Search** - Find hardcoded credentials, API keys, private keys
+- **Binary Analysis** - Detect unsafe functions in ELF binaries
+- **Pattern Search** - Custom regex search across all files
+- **Findings Export** - Export results to TXT, JSON, or CSV
+
+### Dependencies
+```bash
+# Required
+brew install binwalk
+
+# Recommended for better extraction
+brew install sasquatch squashfs-tools
+pip install jefferson ubi_reader
+```
+
+### Commands
+```
+load <path>     - Load firmware file
+scan            - Scan for filesystems
+extract         - Extract all filesystems
+analyze         - Run full security scan
+creds           - Scan for credentials only
+search <regex>  - Search with custom pattern
+export [format] - Export findings (txt/json/csv)
+```
 
 ## Configuration
 
@@ -141,6 +176,10 @@ hwh/
 │   ├── buspirate.py    # Bus Pirate backend
 │   ├── bolt.py         # Curious Bolt backend
 │   └── sump.py         # SUMP protocol for logic analyzers
+├── firmware/
+│   ├── extractor.py    # Firmware extraction engine
+│   ├── analyzer.py     # Security analysis engine
+│   └── patterns.py     # Vulnerability patterns
 └── tui/
     ├── app.py          # Main TUI application
     ├── style.tcss      # Styling

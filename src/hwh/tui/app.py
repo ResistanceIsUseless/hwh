@@ -20,6 +20,7 @@ from textual.widgets import Static, Button, Select, TabbedContent, TabPane, Foot
 from textual.binding import Binding
 
 from ..detect import detect, DeviceInfo
+from .. import __version__
 
 # Import all panel types
 from .panels.base import DevicePanel, GenericPanel, PanelCapability
@@ -30,6 +31,7 @@ from .panels.faultycat import FaultyCatPanel
 from .panels.tilink import TILinkPanel
 from .panels.blackmagic import BlackMagicPanel
 from .panels.uart_monitor import UARTMonitorPanel
+from .panels.firmware import FirmwarePanel
 from .panels.base import DeviceOutputMessage
 
 
@@ -148,11 +150,13 @@ class HwhApp(App):
 
     CSS_PATH = "style.tcss"
     TITLE = "hwh - Hardware Hacking Toolkit"
+    SUB_TITLE = f"v{__version__}"
 
     BINDINGS = [
         Binding("q", "quit", "Quit"),
         Binding("r", "refresh_devices", "Refresh"),
         Binding("d", "show_devices", "Devices"),
+        Binding("f", "show_firmware", "Firmware"),
         Binding("s", "toggle_split", "Split"),
         Binding("c", "show_coordination", "Coordination"),
         Binding("escape", "show_devices", "Discovery"),
@@ -175,7 +179,14 @@ class HwhApp(App):
             with TabPane("Devices", id="tab-devices"):
                 yield from self._build_devices_page()
 
-        yield Footer()
+            # Firmware analysis tab - always present, no device needed
+            with TabPane("Firmware", id="tab-firmware"):
+                yield FirmwarePanel(id="firmware-panel")
+
+        # Footer with version
+        with Horizontal(id="app-footer"):
+            yield Footer()
+            yield Static(f"v{__version__}", id="version-display")
 
     def _build_devices_page(self) -> ComposeResult:
         """Build the device selection page"""
@@ -206,7 +217,12 @@ class HwhApp(App):
 
     async def action_show_help(self) -> None:
         """Show help"""
-        self.notify("hwh - Hardware Hacking Toolkit\nPress 'q' to quit, 'r' to refresh, 's' for split view, 'c' for coordination")
+        self.notify("hwh - Hardware Hacking Toolkit\nPress 'q' to quit, 'r' to refresh, 'f' for firmware, 's' for split view")
+
+    async def action_show_firmware(self) -> None:
+        """Switch to firmware analysis tab"""
+        tabs = self.query_one("#main-tabs", TabbedContent)
+        tabs.active = "tab-firmware"
 
     async def action_show_coordination(self) -> None:
         """Show coordination panel for multi-device operations"""

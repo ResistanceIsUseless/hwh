@@ -14,6 +14,7 @@ from .tilink import TILinkPanel
 from .blackmagic import BlackMagicPanel
 from .uart_monitor import UARTMonitorPanel
 from .logic_analyzer import LogicAnalyzerWidget
+from .firmware import FirmwarePanel
 
 __all__ = [
     "DevicePanel",
@@ -26,4 +27,5 @@ __all__ = [
     "BlackMagicPanel",
     "UARTMonitorPanel",
     "LogicAnalyzerWidget",
+    "FirmwarePanel",
 ]

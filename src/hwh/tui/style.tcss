@@ -869,6 +869,380 @@ Switch.-on > .switch--slider {
     margin-right: 1;
 }
 
+/* === Firmware Analysis Panel === */
+
+#firmware-panel {
+    height: 100%;
+}
+
+.firmware-header {
+    height: 3;
+    padding: 0 1;
+    background: #2F596D;
+    align: left middle;
+}
+
+.firmware-title {
+    color: #9DC3CF;
+    text-style: bold;
+    padding-right: 2;
+}
+
+.firmware-path-input {
+    width: 1fr;
+    margin-right: 1;
+}
+
+.firmware-status-bar {
+    height: 1;
+    padding: 0 1;
+    background: #141618;
+}
+
+.firmware-status {
+    color: #B3B8BB;
+    width: auto;
+    min-width: 20;
+}
+
+.firmware-action {
+    color: #6EBFF5;
+    margin-left: 2;
+    width: 1fr;
+}
+
+.firmware-progress {
+    width: 20;
+    margin-left: 1;
+    display: none;
+}
+
+.firmware-tools-status {
+    color: #F5A623;
+    width: auto;
+    min-width: 15;
+    text-align: right;
+}
+
+#firmware-tabs {
+    height: 1fr;
+}
+
+/* Extract Tab */
+.extract-content {
+    padding: 1;
+}
+
+.fs-list-container {
+    border: round #2F596D;
+    border-title-color: #5E99AE;
+    height: auto;
+    min-height: 8;
+    margin: 1 0;
+}
+
+#fs-list {
+    height: auto;
+    max-height: 10;
+}
+
+.fs-entry {
+    height: 1;
+    padding: 0 1;
+}
+
+.fs-entry:hover {
+    background: #2F596D;
+}
+
+.fs-offset {
+    width: 12;
+    color: #5E99AE;
+}
+
+.fs-type {
+    width: 10;
+    color: #9DC3CF;
+}
+
+.fs-size {
+    width: 1fr;
+    color: #B3B8BB;
+}
+
+.extract-results {
+    border: round #2F596D;
+    border-title-color: #5E99AE;
+    height: auto;
+    min-height: 6;
+}
+
+#extract-results-list {
+    height: auto;
+    max-height: 8;
+}
+
+.root-entry {
+    height: 1;
+    padding: 0 1;
+}
+
+.root-name {
+    width: 1fr;
+    color: #9DC3CF;
+}
+
+.root-count {
+    width: 15;
+    color: #B3B8BB;
+}
+
+/* Browse Tab */
+.browse-content {
+    height: 100%;
+}
+
+.browse-tree-section {
+    width: 40%;
+    padding: 1;
+}
+
+.browse-preview-section {
+    width: 60%;
+    padding: 1;
+}
+
+.quick-nav {
+    height: auto;
+    padding: 1 0;
+}
+
+.btn-nav {
+    min-width: 6;
+    margin-right: 1;
+}
+
+.file-tree-container {
+    height: 1fr;
+    border: round #2F596D;
+    border-title-color: #5E99AE;
+}
+
+#file-tree {
+    height: 100%;
+}
+
+.preview-controls {
+    height: auto;
+    padding: 1 0;
+}
+
+.preview-container {
+    height: 1fr;
+    border: round #2F596D;
+    border-title-color: #5E99AE;
+}
+
+.file-preview-log {
+    height: 100%;
+    background: #141618;
+    color: #B3B8BB;
+}
+
+/* Search Tab */
+.search-content {
+    padding: 1;
+}
+
+.search-row {
+    height: 3;
+    padding: 1 0;
+}
+
+.search-input {
+    width: 1fr;
+    margin-right: 1;
+}
+
+.search-results {
+    border: round #2F596D;
+    border-title-color: #5E99AE;
+    height: 1fr;
+    margin-top: 1;
+}
+
+.search-results-log {
+    height: 100%;
+    background: #141618;
+}
+
+/* Findings Tab */
+.findings-content {
+    padding: 1;
+    height: 100%;
+}
+
+.findings-summary {
+    height: 3;
+    padding: 1;
+    background: #2F596D;
+    align: center middle;
+}
+
+.count-critical {
+    color: #B13840;
+    text-style: bold;
+    width: 4;
+    text-align: center;
+}
+
+.count-high {
+    color: #ff8800;
+    text-style: bold;
+    width: 4;
+    text-align: center;
+}
+
+.count-medium {
+    color: #ffff00;
+    text-style: bold;
+    width: 4;
+    text-align: center;
+}
+
+.count-low {
+    color: #5E99AE;
+    text-style: bold;
+    width: 4;
+    text-align: center;
+}
+
+.label-count {
+    color: #B3B8BB;
+    width: 10;
+    padding-right: 2;
+}
+
+.findings-table-container {
+    height: 1fr;
+    margin-top: 1;
+}
+
+.findings-table {
+    height: 100%;
+}
+
+/* Console */
+.firmware-console {
+    height: 12;
+    border: round #2F596D;
+    border-title-color: #5E99AE;
+    margin: 1;
+}
+
+.firmware-log {
+    height: 1fr;
+    background: #141618;
+    color: #B3B8BB;
+}
+
+.firmware-input {
+    width: 1fr;
+}
+
+/* Placeholder text */
+.placeholder {
+    color: #B3B8BB;
+    text-align: center;
+    padding: 2;
+}
+
+/* Tree styling */
+Tree {
+    background: #141618;
+}
+
+Tree > .tree--cursor {
+    background: #2F596D;
+}
+
+Tree > .tree--highlight {
+    background: #5E99AE;
+}
+
+/* === File Picker Modal === */
+
+FilePickerScreen {
+    align: center middle;
+}
+
+#file-picker-modal {
+    width: 80%;
+    height: 80%;
+    background: #1A1D1F;
+    border: thick #2F596D;
+    padding: 1 2;
+}
+
+#picker-title {
+    text-style: bold;
+    color: #9DC3CF;
+    text-align: center;
+    padding-bottom: 1;
+}
+
+#current-path {
+    color: #B3B8BB;
+    padding: 0 1 1 1;
+    background: #141618;
+}
+
+#file-picker-tree {
+    height: 1fr;
+    border: round #2F596D;
+    margin: 1 0;
+}
+
+#file-picker-tree DirectoryTree {
+    background: #141618;
+}
+
+#selected-file {
+    color: #5E99AE;
+    padding: 1;
+    text-style: bold;
+}
+
+#picker-buttons {
+    height: auto;
+    align: center middle;
+    padding-top: 1;
+}
+
+#picker-buttons Button {
+    margin: 0 1;
+    min-width: 12;
+}
+
+/* === App Footer with Version === */
+
+#app-footer {
+    height: auto;
+    dock: bottom;
+}
+
+#app-footer Footer {
+    width: 1fr;
+}
+
+#version-display {
+    width: auto;
+    padding: 0 2;
+    background: #141618;
+    color: #5E99AE;
+    text-style: bold;
+}
+
 /* === Hidden class === */
 
 .hidden {
