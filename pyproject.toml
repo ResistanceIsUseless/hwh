@@ -45,6 +45,8 @@ dependencies = [
     "pyserial>=3.5",
     "rich>=13.0.0",
     "click>=8.0.0",
+    "cobs>=1.2.0",         # COBS encoding for BPIO2 protocol
+    "flatbuffers>=24.0.0", # FlatBuffers for BPIO2 protocol
 ]
 
 [project.optional-dependencies]
@@ -59,7 +61,7 @@ bolt = [
     # Curious Bolt native library (install from bolt repo)
 ]
 buspirate = [
-    "bpio2>=0.1.0",  # Bus Pirate IO library
+    # pybpio is now bundled in hwh/pybpio
 ]
 
 [project.scripts]

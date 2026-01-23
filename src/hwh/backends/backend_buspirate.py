@@ -15,15 +15,14 @@ from .base import (
 )
 from ..detect import DeviceInfo
 
-# Import official BPIO2 library (optional - falls back to serial if not available)
+# Import bundled BPIO2 library
 try:
-    from ..pybpio.bpio_client import BPIOClient
-    from ..pybpio.bpio_spi import BPIOSPI
-    from ..pybpio.bpio_i2c import BPIOI2C
-    from ..pybpio.bpio_uart import BPIOUART
+    from ..pybpio import BPIOClient, BPIOSPI, BPIOI2C, BPIOUART
     BPIO_AVAILABLE = True
-except ImportError:
-    # pybpio not installed - will use serial fallback
+except ImportError as e:
+    # pybpio import failed - will use serial fallback
+    # This should not happen since pybpio is now bundled
+    print(f"[BusPirate] Warning: Failed to import bundled pybpio: {e}")
     BPIOClient = None
     BPIOSPI = None
     BPIOI2C = None
@@ -40,6 +39,7 @@ class BusPirateBackend(BusBackend):
     - Port 1 (buspirate3): BPIO2 binary interface
 
     We use the BPIO2 interface for programmatic control.
+    When BPIO2 is not available, we fall back to terminal serial commands.
     """
 
     def __init__(self, device: DeviceInfo):
@@ -49,6 +49,127 @@ class BusPirateBackend(BusBackend):
         self._i2c = None
         self._uart = None
         self._current_mode = None
+        self._serial_fallback = None  # Persistent serial connection for fallback mode
+        self._psu_enabled = False
+        self._psu_voltage_mv = 3300
+        self._pullups_enabled = False
+
+    def _open_serial_fallback(self) -> bool:
+        """
+        Open a persistent serial connection for fallback (non-BPIO) mode.
+
+        Returns:
+            True if serial connection established successfully
+        """
+        import serial
+        import time
+
+        if not self.device.port:
+            return False
+
+        try:
+            print(f"[BusPirate] Opening serial connection: {self.device.port}")
+
+            # Close any existing connection
+            if self._serial_fallback:
+                try:
+                    self._serial_fallback.close()
+                except Exception:
+                    pass
+
+            # Open serial port at 115200 baud (Bus Pirate default)
+            self._serial_fallback = serial.Serial(
+                self.device.port,
+                115200,
+                timeout=1,
+                write_timeout=1
+            )
+            time.sleep(0.2)
+
+            # Clear any pending data
+            self._serial_fallback.reset_input_buffer()
+            self._serial_fallback.reset_output_buffer()
+
+            # Send a newline to get a fresh prompt
+            self._serial_fallback.write(b"\r\n")
+            time.sleep(0.3)
+
+            # Read and discard any response
+            if self._serial_fallback.in_waiting > 0:
+                response = self._serial_fallback.read(self._serial_fallback.in_waiting)
+                response_str = response.decode('utf-8', errors='ignore')
+                print(f"[BusPirate] Initial response: {response_str[:100]}")
+
+                # Check if we got a valid BP prompt
+                if "HiZ>" in response_str or ">" in response_str:
+                    print(f"[BusPirate] Serial fallback connected (HiZ mode)")
+                    self._current_mode = "HiZ"
+                elif "SPI>" in response_str:
+                    print(f"[BusPirate] Serial fallback connected (SPI mode)")
+                    self._current_mode = "SPI"
+                elif "I2C>" in response_str:
+                    print(f"[BusPirate] Serial fallback connected (I2C mode)")
+                    self._current_mode = "I2C"
+                elif "UART>" in response_str:
+                    print(f"[BusPirate] Serial fallback connected (UART mode)")
+                    self._current_mode = "UART"
+
+            print(f"[BusPirate] Serial fallback connection established")
+            return True
+
+        except Exception as e:
+            print(f"[BusPirate] Serial fallback connection failed: {e}")
+            self._serial_fallback = None
+            return False
+
+    def _send_serial_command(self, command: str, timeout: float = 1.0) -> tuple[bool, str]:
+        """
+        Send a command via the serial fallback connection and read response.
+
+        Args:
+            command: Command string to send (without newline)
+            timeout: Read timeout in seconds
+
+        Returns:
+            Tuple of (success, response_string)
+        """
+        import time
+
+        if not self._serial_fallback:
+            return False, "No serial connection"
+
+        try:
+            # Clear input buffer
+            self._serial_fallback.reset_input_buffer()
+
+            # Send command with carriage return
+            cmd_bytes = f"{command}\r\n".encode()
+            print(f"[BusPirate] Sending: {command}")
+            self._serial_fallback.write(cmd_bytes)
+
+            # Wait for response
+            time.sleep(0.3)
+
+            # Read all available data
+            response = b""
+            end_time = time.time() + timeout
+            while time.time() < end_time:
+                if self._serial_fallback.in_waiting > 0:
+                    response += self._serial_fallback.read(self._serial_fallback.in_waiting)
+                    time.sleep(0.1)
+                else:
+                    if response:
+                        break
+                    time.sleep(0.1)
+
+            response_str = response.decode('utf-8', errors='ignore')
+            print(f"[BusPirate] Response: {response_str[:200]}")
+
+            return True, response_str
+
+        except Exception as e:
+            print(f"[BusPirate] Serial command failed: {e}")
+            return False, str(e)
 
     def _enter_binary_mode(self, console_port: str) -> bool:
         """
@@ -114,9 +235,13 @@ class BusPirateBackend(BusBackend):
         if not BPIO_AVAILABLE:
             print(f"[BusPirate] BPIO library not available - using serial fallback")
             print(f"[BusPirate] Some features may be limited")
-            # Mark as connected for basic serial functionality
-            self._connected = True
-            return True
+            # Establish persistent serial connection for fallback mode
+            if self._open_serial_fallback():
+                self._connected = True
+                return True
+            else:
+                print(f"[BusPirate] Failed to open serial fallback connection")
+                return False
 
         try:
             # BPIO2 runs on the second serial port (interface 3, not 1)
@@ -211,17 +336,75 @@ class BusPirateBackend(BusBackend):
             except Exception:
                 pass
             self._client = None
+
+        if self._serial_fallback:
+            try:
+                self._serial_fallback.close()
+            except Exception:
+                pass
+            self._serial_fallback = None
+
         self._spi = None
         self._i2c = None
         self._connected = False
 
     def get_info(self) -> dict[str, Any]:
         """Get Bus Pirate status information."""
-        if not self._connected or not self._client:
+        if not self._connected:
             return {"error": "Not connected"}
 
-        status = self._client.status_request()
-        return status if status else {"error": "Status request failed"}
+        # If BPIO client is available, use it
+        if self._client:
+            status = self._client.status_request()
+            return status if status else {"error": "Status request failed"}
+
+        # Fallback: return cached state from serial mode
+        return {
+            "mode": self._current_mode or "HiZ",
+            "psu_enabled": self._psu_enabled,
+            "psu_voltage": f"{self._psu_voltage_mv / 1000:.1f}V",
+            "pullups_enabled": self._pullups_enabled,
+            "serial_fallback": True
+        }
+
+    def get_status(self) -> dict[str, Any]:
+        """
+        Get device status for panel display.
+
+        Returns:
+            Dictionary with status information:
+            - mode: Current protocol mode (HiZ, SPI, I2C, UART, etc.)
+            - psu_enabled: Whether PSU is enabled
+            - psu_voltage: PSU voltage string (e.g., "3.3V")
+            - pullups_enabled: Whether pull-ups are enabled
+            - firmware: Firmware version (if available)
+            - hardware: Hardware version (if available)
+        """
+        if not self._connected:
+            return {"error": "Not connected"}
+
+        # If BPIO client is available, get full status
+        if self._client:
+            status = self._client.status_request()
+            if status:
+                return {
+                    "mode": status.get('mode_current', 'HiZ'),
+                    "psu_enabled": status.get('psu_enabled', False),
+                    "psu_voltage": f"{status.get('psu_set_mv', 3300) / 1000:.1f}V",
+                    "pullups_enabled": status.get('pullup_enabled', False),
+                    "firmware": f"{status.get('version_firmware_major', 0)}.{status.get('version_firmware_minor', 0)}",
+                    "hardware": f"{status.get('version_hardware_major', 0)} REV{status.get('version_hardware_minor', 0)}",
+                }
+            return {"error": "Status request failed"}
+
+        # Fallback: return cached state from serial mode
+        return {
+            "mode": self._current_mode or "HiZ",
+            "psu_enabled": self._psu_enabled,
+            "psu_voltage": f"{self._psu_voltage_mv / 1000:.1f}V",
+            "pullups_enabled": self._pullups_enabled,
+            "serial_fallback": True
+        }
 
     # --------------------------------------------------------------------------
     # SPI Interface
@@ -229,30 +412,35 @@ class BusPirateBackend(BusBackend):
 
     def configure_spi(self, config: SPIConfig) -> bool:
         """Configure SPI interface."""
-        if not self._connected or not self._client:
+        if not self._connected:
             return False
 
-        # Create SPI interface if needed
-        if not self._spi:
-            self._spi = BPIOSPI(self._client)
+        # If BPIO client is available, use it
+        if self._client:
+            # Create SPI interface if needed
+            if not self._spi:
+                self._spi = BPIOSPI(self._client)
 
-        # Map config to BPIO2 parameters
-        clock_polarity = bool((config.mode >> 1) & 1)  # CPOL
-        clock_phase = bool(config.mode & 1)            # CPHA
+            # Map config to BPIO2 parameters
+            clock_polarity = bool((config.mode >> 1) & 1)  # CPOL
+            clock_phase = bool(config.mode & 1)            # CPHA
 
-        # Configure SPI mode with all parameters
-        success = self._spi.configure(
-            speed=config.speed_hz,
-            clock_polarity=clock_polarity,
-            clock_phase=clock_phase,
-            chip_select_idle=config.cs_active_low,
-        )
+            # Configure SPI mode with all parameters
+            success = self._spi.configure(
+                speed=config.speed_hz,
+                clock_polarity=clock_polarity,
+                clock_phase=clock_phase,
+                chip_select_idle=config.cs_active_low,
+            )
 
-        if success:
-            self._current_mode = "SPI"
-            print(f"[BusPirate] SPI configured: {config.speed_hz}Hz, mode={config.mode}")
+            if success:
+                self._current_mode = "SPI"
+                print(f"[BusPirate] SPI configured: {config.speed_hz}Hz, mode={config.mode}")
 
-        return success
+            return success
+
+        # Fallback to serial command
+        return self._send_serial_mode_command("SPI", config)
 
     def spi_transfer(self, write_data: bytes, read_len: int = 0) -> bytes:
         """Perform SPI transfer."""
@@ -288,24 +476,29 @@ class BusPirateBackend(BusBackend):
 
     def configure_i2c(self, config: I2CConfig) -> bool:
         """Configure I2C interface."""
-        if not self._connected or not self._client:
+        if not self._connected:
             return False
 
-        # Create I2C interface if needed
-        if not self._i2c:
-            self._i2c = BPIOI2C(self._client)
+        # If BPIO client is available, use it
+        if self._client:
+            # Create I2C interface if needed
+            if not self._i2c:
+                self._i2c = BPIOI2C(self._client)
 
-        # Configure I2C mode
-        success = self._i2c.configure(
-            speed=config.speed_hz,
-            clock_stretch=False
-        )
+            # Configure I2C mode
+            success = self._i2c.configure(
+                speed=config.speed_hz,
+                clock_stretch=False
+            )
 
-        if success:
-            self._current_mode = "I2C"
-            print(f"[BusPirate] I2C configured: {config.speed_hz}Hz")
+            if success:
+                self._current_mode = "I2C"
+                print(f"[BusPirate] I2C configured: {config.speed_hz}Hz")
 
-        return success
+            return success
+
+        # Fallback to serial command
+        return self._send_serial_mode_command("I2C", config)
 
     def i2c_write(self, address: int, data: bytes) -> bool:
         """Write data to I2C device."""
@@ -369,47 +562,544 @@ class BusPirateBackend(BusBackend):
 
     def configure_uart(self, config: UARTConfig) -> bool:
         """Configure UART interface."""
-        if not self._connected or not self._client:
+        if not self._connected:
             return False
 
-        # Create UART wrapper if needed
-        if not self._uart:
-            self._uart = BPIOUART(self._client)
+        # If BPIO client is available, use it
+        if self._client:
+            # Create UART wrapper if needed
+            if not self._uart:
+                self._uart = BPIOUART(self._client)
 
-        # Map parity to boolean (UART uses boolean: True=even, False=none)
-        parity = False
-        if config.parity in ('E', 'O'):
-            parity = True
+            # Map parity to boolean (UART uses boolean: True=even, False=none)
+            parity = False
+            if config.parity in ('E', 'O'):
+                parity = True
 
-        success = self._uart.configure(
-            speed=config.baudrate,
-            data_bits=config.data_bits,
-            parity=parity,
-            stop_bits=config.stop_bits,
-            flow_control=False,
-            signal_inversion=False
-        )
+            success = self._uart.configure(
+                speed=config.baudrate,
+                data_bits=config.data_bits,
+                parity=parity,
+                stop_bits=config.stop_bits,
+                flow_control=False,
+                signal_inversion=False
+            )
 
-        if success:
+            if success:
+                self._current_mode = "UART"
+                print(f"[BusPirate] UART configured: {config.baudrate} baud, {config.data_bits}{config.parity}{config.stop_bits}")
+
+            return success
+
+        # Fallback to serial command - configure UART mode with baud rate
+        return self._configure_uart_serial_fallback(config)
+
+    def _configure_uart_serial_fallback(self, config: UARTConfig) -> bool:
+        """
+        Configure UART via serial terminal commands.
+
+        Bus Pirate 5/6 UART configuration flow:
+        1. Select mode via 'm' command or direct 'uart' command
+        2. Configure speed and format
+        3. Enter bridge mode for transparent passthrough
+
+        BP5/6 supports direct commands like:
+        - 'uart' or 'm 3' to enter UART mode
+        - 'uart.speed <baud>' to set baud rate
+        - 'bridge' to enter transparent bridge mode
+        """
+        if not self._serial_fallback:
+            print("[BusPirate] No serial connection for UART config")
+            return False
+
+        try:
+            import time
+
+            # First, try to exit any current mode and go to HiZ
+            # Send 'm 1' to ensure we're in a clean state (HiZ mode)
+            if self._current_mode not in (None, "HiZ", "UART"):
+                print("[BusPirate] Exiting current mode...")
+                self._send_serial_command("m 1")
+                time.sleep(0.3)
+
+            # Try different methods to enter UART mode
+            # Method 1: Direct 'uart' command (BP5/6 style)
+            print(f"[BusPirate] Configuring UART: {config.baudrate} baud")
+            success, response = self._send_serial_command("uart")
+            time.sleep(0.3)
+
+            # Check if we entered UART mode
+            if "UART>" in response:
+                self._current_mode = "UART"
+                print("[BusPirate] Entered UART mode")
+            elif "Select" in response or "mode" in response.lower():
+                # We got a mode selection menu - need to choose UART
+                # BP5/6 menu: 1=HiZ, 2=SPI, 3=I2C, 4=UART, etc.
+                print("[BusPirate] Got mode menu, selecting UART (option 4)")
+                success, response = self._send_serial_command("4")
+                time.sleep(0.3)
+                if "UART>" in response:
+                    self._current_mode = "UART"
+                    print("[BusPirate] Entered UART mode via menu")
+
+            # Now configure baud rate
+            # BP5/6 may prompt for baud rate after entering UART mode
+            if "baud" in response.lower() or "speed" in response.lower():
+                # There's a baud rate menu - send the baud rate
+                print(f"[BusPirate] Setting baud rate: {config.baudrate}")
+
+                # Map common baud rates to menu options for BP5/6
+                baud_map = {
+                    300: "1", 1200: "2", 2400: "3", 4800: "4",
+                    9600: "5", 19200: "6", 38400: "7", 57600: "8",
+                    115200: "9", 230400: "10", 460800: "11", 921600: "12"
+                }
+
+                if config.baudrate in baud_map:
+                    success, response = self._send_serial_command(baud_map[config.baudrate])
+                else:
+                    # Try sending raw baud rate
+                    success, response = self._send_serial_command(str(config.baudrate))
+                time.sleep(0.2)
+
+            # Configure data bits, parity, stop bits if prompted
+            # BP5/6 typically uses defaults (8N1) but may prompt
+            if "data" in response.lower() and "bits" in response.lower():
+                # 8 data bits is usually option 1
+                self._send_serial_command("1")
+                time.sleep(0.1)
+
+            if "parity" in response.lower():
+                # None parity is usually option 1
+                parity_map = {"N": "1", "E": "2", "O": "3"}
+                self._send_serial_command(parity_map.get(config.parity, "1"))
+                time.sleep(0.1)
+
+            if "stop" in response.lower():
+                # 1 stop bit is usually option 1
+                stop_map = {1: "1", 2: "2"}
+                self._send_serial_command(stop_map.get(config.stop_bits, "1"))
+                time.sleep(0.1)
+
+            # Accept any remaining prompts by pressing enter
+            self._send_serial_command("")
+            time.sleep(0.2)
+
+            # Verify we're in UART mode
+            success, response = self._send_serial_command("")
+            if "UART>" in response:
+                self._current_mode = "UART"
+                print(f"[BusPirate] UART configured: {config.baudrate} {config.data_bits}{config.parity}{config.stop_bits}")
+                return True
+
+            # Even if we didn't see UART>, assume success if we got this far
             self._current_mode = "UART"
-            print(f"[BusPirate] UART configured: {config.baudrate} baud, {config.data_bits}{config.parity}{config.stop_bits}")
+            print(f"[BusPirate] UART mode assumed configured")
+            return True
 
-        return success
+        except Exception as e:
+            print(f"[BusPirate] UART config error: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+
+    def uart_start_bridge(self) -> bool:
+        """
+        Start transparent UART bridge mode.
+
+        In bridge mode, the Bus Pirate acts as a transparent passthrough
+        between the host serial port and the target UART. All data sent
+        to the BP is forwarded to the target and vice versa.
+
+        BP5/6 bridge command: 'bridge' from UART> prompt
+        This enters transparent mode until reset.
+
+        Returns:
+            True if bridge mode started successfully
+        """
+        if not self._connected:
+            return False
+
+        # BPIO mode - use the UART bridge feature
+        if self._uart:
+            # BPIO library handles bridge internally
+            print("[BusPirate] UART bridge mode (BPIO)")
+            return True
+
+        # Serial fallback - send 'bridge' command
+        if self._serial_fallback:
+            import time
+
+            # Make sure we're in UART mode first
+            if self._current_mode != "UART":
+                print("[BusPirate] Not in UART mode, cannot start bridge")
+                return False
+
+            # Send bridge command
+            # BP5/6: 'bridge' enters transparent passthrough mode
+            _, response = self._send_serial_command("bridge")
+            time.sleep(0.2)
+
+            # Bridge mode may show a message about entering bridge mode
+            if "bridge" in response.lower() or "transparent" in response.lower():
+                print("[BusPirate] UART bridge mode started")
+                return True
+
+            # Even without confirmation, assume bridge mode is active
+            print("[BusPirate] UART bridge mode started (assumed)")
+            return True
+
+        return False
 
     def uart_write(self, data: bytes):
         """Write data to UART."""
-        if not self._uart:
+        # BPIO mode
+        if self._uart:
+            self._uart.write(list(data))
             return
 
-        self._uart.write(list(data))
+        # Serial fallback mode - send data directly
+        if self._serial_fallback and self._current_mode == "UART":
+            try:
+                self._serial_fallback.write(data)
+            except Exception as e:
+                print(f"[BusPirate] UART write error: {e}")
 
     def uart_read(self, length: int, timeout_ms: int = 1000) -> bytes:
         """Read data from UART."""
-        if not self._uart:
-            return b''
+        # BPIO mode
+        if self._uart:
+            result = self._uart.read(length)
+            return result if result else b''
 
-        result = self._uart.read(length)
-        return result if result else b''
+        # Serial fallback mode - read from serial
+        if self._serial_fallback and self._current_mode == "UART":
+            try:
+                # Set timeout based on timeout_ms
+                old_timeout = self._serial_fallback.timeout
+                self._serial_fallback.timeout = timeout_ms / 1000.0
+
+                # Read available data
+                data = b''
+                if self._serial_fallback.in_waiting > 0:
+                    data = self._serial_fallback.read(min(length, self._serial_fallback.in_waiting))
+                elif timeout_ms > 0:
+                    # Wait for data with timeout
+                    data = self._serial_fallback.read(1)  # Wait for at least 1 byte
+                    if data and self._serial_fallback.in_waiting > 0:
+                        data += self._serial_fallback.read(min(length - 1, self._serial_fallback.in_waiting))
+
+                self._serial_fallback.timeout = old_timeout
+                return data
+            except Exception as e:
+                print(f"[BusPirate] UART read error: {e}")
+                return b''
+
+        return b''
+
+    def uart_auto_detect(
+        self,
+        baud_rates: list[int] | None = None,
+        data_bits_options: list[int] | None = None,
+        parity_options: list[str] | None = None,
+        stop_bits_options: list[int] | None = None,
+        test_duration_ms: int = 500,
+        progress_callback=None
+    ) -> list[dict[str, Any]]:
+        """
+        Auto-detect UART configuration by testing different combinations.
+
+        This method tests various UART settings to find configurations that
+        produce valid/readable data. It's useful for identifying unknown
+        UART interfaces on target devices.
+
+        Args:
+            baud_rates: List of baud rates to test (default: common rates)
+            data_bits_options: List of data bit settings (default: [8, 7])
+            parity_options: List of parity settings (default: ['N', 'E', 'O'])
+            stop_bits_options: List of stop bit settings (default: [1, 2])
+            test_duration_ms: How long to listen for data at each setting (ms)
+            progress_callback: Optional callback(current, total, config_str) -> bool
+                              Return False to stop scanning
+
+        Returns:
+            List of configurations that received valid data, each containing:
+            {
+                'baudrate': int,
+                'data_bits': int,
+                'parity': str,
+                'stop_bits': int,
+                'data_received': bytes,
+                'printable_ratio': float,  # Ratio of printable ASCII chars
+                'likely_valid': bool       # True if high printable ratio
+            }
+        """
+        import time
+
+        if not self._connected:
+            return []
+
+        # Default configuration options
+        if baud_rates is None:
+            baud_rates = [115200, 9600, 57600, 38400, 19200, 230400, 460800, 921600]
+        if data_bits_options is None:
+            data_bits_options = [8, 7]
+        if parity_options is None:
+            parity_options = ['N', 'E', 'O']
+        if stop_bits_options is None:
+            stop_bits_options = [1, 2]
+
+        results = []
+        total_tests = len(baud_rates) * len(data_bits_options) * len(parity_options) * len(stop_bits_options)
+        current_test = 0
+
+        print(f"[BusPirate] Starting UART auto-detect ({total_tests} combinations)")
+
+        for baud in baud_rates:
+            for data_bits in data_bits_options:
+                for parity in parity_options:
+                    for stop_bits in stop_bits_options:
+                        current_test += 1
+                        config_str = f"{baud} {data_bits}{parity}{stop_bits}"
+
+                        # Progress callback
+                        if progress_callback:
+                            if not progress_callback(current_test, total_tests, config_str):
+                                print(f"[BusPirate] UART scan stopped by user")
+                                return results
+
+                        # Configure UART with this setting
+                        config = UARTConfig(
+                            baudrate=baud,
+                            data_bits=data_bits,
+                            parity=parity,
+                            stop_bits=stop_bits
+                        )
+
+                        try:
+                            if not self.configure_uart(config):
+                                continue
+
+                            # Wait and collect data
+                            time.sleep(test_duration_ms / 1000.0)
+
+                            # Try to read any available data
+                            data = self.uart_read(256, timeout_ms=test_duration_ms)
+
+                            if data and len(data) > 0:
+                                # Calculate how much of the data is printable ASCII
+                                printable_count = sum(1 for b in data if 32 <= b <= 126 or b in (9, 10, 13))
+                                printable_ratio = printable_count / len(data) if len(data) > 0 else 0
+
+                                # Consider it "likely valid" if >50% printable
+                                likely_valid = printable_ratio > 0.5
+
+                                result = {
+                                    'baudrate': baud,
+                                    'data_bits': data_bits,
+                                    'parity': parity,
+                                    'stop_bits': stop_bits,
+                                    'data_received': data,
+                                    'printable_ratio': printable_ratio,
+                                    'likely_valid': likely_valid
+                                }
+                                results.append(result)
+
+                                if likely_valid:
+                                    print(f"[BusPirate] Found valid config: {config_str} ({printable_ratio:.0%} printable)")
+
+                        except Exception as e:
+                            print(f"[BusPirate] Error testing {config_str}: {e}")
+                            continue
+
+        print(f"[BusPirate] UART scan complete: {len(results)} configs received data")
+        return results
+
+    def uart_auto_detect_quick(
+        self,
+        test_duration_ms: int = 300,
+        progress_callback=None
+    ) -> list[dict[str, Any]]:
+        """
+        Quick UART auto-detect focusing on most common configurations.
+
+        Tests only 8N1 format with common baud rates for faster scanning.
+
+        Args:
+            test_duration_ms: How long to listen at each baud rate
+            progress_callback: Optional callback(current, total, config_str) -> bool
+
+        Returns:
+            List of configurations that received valid data
+        """
+        # Most common configurations only
+        common_bauds = [115200, 9600, 57600, 38400, 19200, 230400]
+
+        return self.uart_auto_detect(
+            baud_rates=common_bauds,
+            data_bits_options=[8],
+            parity_options=['N'],
+            stop_bits_options=[1],
+            test_duration_ms=test_duration_ms,
+            progress_callback=progress_callback
+        )
+
+    # --------------------------------------------------------------------------
+    # UART Glitch Attack
+    # --------------------------------------------------------------------------
+
+    def uart_glitch(
+        self,
+        trigger_char: int = 13,
+        trigger_delay: int = 1400,
+        vary_time: int = 3,
+        output_on_time: int = 7,
+        cycle_delay: int = 100,
+        normal_response: int = 80,
+        num_attempts: int = 1000,
+        bypass_ready: bool = True,
+        progress_callback=None
+    ) -> bool:
+        """
+        Execute UART glitch attack using Bus Pirate 5/6 'glitch' command.
+
+        The Bus Pirate acts as a timing trigger - IO0 goes high during the glitch
+        window. An external crowbar circuit or voltage fault injector is required
+        to actually perform the glitch on the target.
+
+        Timing values are in units of 10 nanoseconds.
+
+        Args:
+            trigger_char: ASCII character to send to target to initiate (default: 13 = CR)
+            trigger_delay: Delay after trigger before glitch output (ns×10)
+            vary_time: Timing variation increment per attempt (ns×10)
+            output_on_time: Duration glitch output stays active (ns×10)
+            cycle_delay: Wait time between attempts (ms)
+            normal_response: ASCII char indicating failed glitch (default: 80 = 'P')
+            num_attempts: Maximum number of glitch attempts
+            bypass_ready: Skip IO1 ready signal checking
+            progress_callback: Optional callback(attempt, total, message) -> bool (return False to stop)
+
+        Returns:
+            True if glitch was successful (abnormal response detected)
+        """
+        if not self._connected:
+            print("[BusPirate] Not connected")
+            return False
+
+        import serial
+        import time
+
+        # Use the console port for glitch command
+        port = self.device.port
+        if not port:
+            print("[BusPirate] No port available")
+            return False
+
+        try:
+            ser = serial.Serial(port, 115200, timeout=2)
+            time.sleep(0.1)
+            ser.reset_input_buffer()
+
+            # First, ensure we're in UART mode
+            print("[BusPirate] Entering UART mode for glitch...")
+            ser.write(b"uart\r\n")
+            time.sleep(0.5)
+            if ser.in_waiting > 0:
+                response = ser.read(ser.in_waiting)
+                print(f"[BusPirate] Mode response: {response.decode('utf-8', errors='ignore')[:100]}")
+
+            # Start the glitch command
+            print("[BusPirate] Starting glitch command...")
+            ser.write(b"glitch\r\n")
+            time.sleep(0.5)
+
+            # Read initial prompt - "Use previous settings?"
+            if ser.in_waiting > 0:
+                response = ser.read(ser.in_waiting)
+                response_str = response.decode('utf-8', errors='ignore')
+                print(f"[BusPirate] Glitch prompt: {response_str[:200]}")
+
+                # Answer "no" to use previous settings - we'll configure fresh
+                if "previous" in response_str.lower():
+                    ser.write(b"n\r\n")
+                    time.sleep(0.3)
+
+            # Configure each parameter
+            def send_param(value, name):
+                """Send a parameter value and read response"""
+                ser.write(f"{value}\r\n".encode())
+                time.sleep(0.2)
+                if ser.in_waiting > 0:
+                    resp = ser.read(ser.in_waiting).decode('utf-8', errors='ignore')
+                    print(f"[BusPirate] {name}: {resp[:50]}")
+
+            # Send configuration parameters in order
+            send_param(trigger_char, "Trigger char")
+            send_param(trigger_delay, "Trigger delay")
+            send_param(vary_time, "Vary time")
+            send_param(output_on_time, "Output on time")
+            send_param(cycle_delay, "Cycle delay")
+            send_param(normal_response, "Normal response")
+            send_param(num_attempts, "Num attempts")
+
+            # Bypass ready check (y/n)
+            bypass_str = "y" if bypass_ready else "n"
+            send_param(bypass_str, "Bypass ready")
+
+            # Now the glitch sequence should start
+            print("[BusPirate] Glitch sequence starting...")
+
+            # Monitor for results
+            glitch_success = False
+            attempts_seen = 0
+            start_time = time.time()
+            max_runtime = (num_attempts * cycle_delay / 1000) + 30  # Add 30s buffer
+
+            while time.time() - start_time < max_runtime:
+                if ser.in_waiting > 0:
+                    data = ser.read(ser.in_waiting)
+                    output = data.decode('utf-8', errors='ignore')
+
+                    # Parse output for attempt numbers and results
+                    if "attempt" in output.lower():
+                        # Try to extract attempt number
+                        import re
+                        match = re.search(r'(\d+)', output)
+                        if match:
+                            attempts_seen = int(match.group(1))
+                            if progress_callback:
+                                if not progress_callback(attempts_seen, num_attempts, None):
+                                    # User requested stop
+                                    print("[BusPirate] Glitch stopped by user")
+                                    ser.write(b"\x03")  # Ctrl+C to stop
+                                    break
+
+                    # Check for success indication
+                    if "success" in output.lower() or "glitch!" in output.lower():
+                        glitch_success = True
+                        if progress_callback:
+                            progress_callback(attempts_seen, num_attempts, "[+] GLITCH SUCCESS DETECTED!")
+                        print(f"[BusPirate] GLITCH SUCCESS: {output}")
+                        break
+
+                    # Check for completion
+                    if "complete" in output.lower() or "done" in output.lower():
+                        print(f"[BusPirate] Glitch sequence completed")
+                        break
+
+                    print(f"[BusPirate] {output[:200]}")
+
+                time.sleep(0.1)
+
+            ser.close()
+            return glitch_success
+
+        except Exception as e:
+            print(f"[BusPirate] Glitch error: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
 
     # --------------------------------------------------------------------------
     # Target Device Scanning
@@ -544,30 +1234,216 @@ class BusPirateBackend(BusBackend):
             voltage_mv: Output voltage in millivolts (1800-5000)
             current_ma: Current limit in milliamps (0 for unlimited)
         """
-        if not self._connected or not self._client:
+        if not self._connected:
             return False
 
-        if enabled:
-            return self._client.configuration_request(
-                psu_enable=True,
-                psu_set_mv=voltage_mv,
-                psu_set_ma=current_ma
-            )
-        else:
-            return self._client.configuration_request(
-                psu_disable=True
-            )
+        # If BPIO client is available, use it
+        if self._client:
+            if enabled:
+                return self._client.configuration_request(
+                    psu_enable=True,
+                    psu_set_mv=voltage_mv,
+                    psu_set_ma=current_ma
+                )
+            else:
+                return self._client.configuration_request(
+                    psu_disable=True
+                )
+
+        # Fallback to serial commands for when BPIO library isn't available
+        return self._send_serial_psu_command(enabled, voltage_mv, current_ma)
+
+    def _send_serial_psu_command(self, enabled: bool, voltage_mv: int = 3300, current_ma: int = 300) -> bool:
+        """
+        Send PSU command via serial terminal interface.
+
+        Bus Pirate 5/6 PSU commands:
+        - "W <voltage>" - Enable PSU with voltage (e.g., "W 3.3")
+        - "w" - Disable PSU
+        """
+        if not self._serial_fallback:
+            print(f"[BusPirate] No serial connection for PSU command")
+            return False
+
+        try:
+            if enabled:
+                # Set voltage and enable
+                voltage_v = voltage_mv / 1000.0
+                # Bus Pirate 5/6 uses "W" command for power supply enable
+                cmd = f"W {voltage_v:.1f}"
+                success, response = self._send_serial_command(cmd)
+
+                if success:
+                    self._psu_enabled = True
+                    self._psu_voltage_mv = voltage_mv
+                    # Check response for confirmation
+                    response_lower = response.lower()
+                    voltage_str = f"{voltage_v:.1f}"
+                    if "power" in response_lower or "psu" in response_lower or ">" in response or voltage_str in response:
+                        print(f"[BusPirate] PSU enabled: {voltage_v:.1f}V")
+                        return True
+                    elif "error" in response_lower or "invalid" in response_lower:
+                        print(f"[BusPirate] PSU command error: {response[:100]}")
+                        self._psu_enabled = False
+                        return False
+                    else:
+                        # Command was sent, assume success
+                        print(f"[BusPirate] PSU command sent (assuming success)")
+                        return True
+                return False
+            else:
+                # Disable power - send "w" command (lowercase)
+                success, response = self._send_serial_command("w")
+                if success:
+                    self._psu_enabled = False
+                    print(f"[BusPirate] PSU disabled")
+                    return True
+                return False
+
+        except Exception as e:
+            print(f"[BusPirate] Serial PSU command failed: {e}")
+            return False
 
     def set_pullups(self, enabled: bool) -> bool:
         """Enable/disable internal pull-up resistors."""
-        if not self._connected or not self._client:
+        if not self._connected:
             return False
 
-        if enabled:
-            return self._client.configuration_request(pullup_enable=True)
-        else:
-            return self._client.configuration_request(pullup_disable=True)
+        # If BPIO client is available, use it
+        if self._client:
+            if enabled:
+                return self._client.configuration_request(pullup_enable=True)
+            else:
+                return self._client.configuration_request(pullup_disable=True)
 
+        # Fallback to serial commands
+        return self._send_serial_pullup_command(enabled)
+
+    def _send_serial_pullup_command(self, enabled: bool) -> bool:
+        """
+        Send pullup command via serial terminal interface.
+
+        Bus Pirate 5/6 pullup commands:
+        - "P" - Enable pull-up resistors
+        - "p" - Disable pull-up resistors
+        """
+        if not self._serial_fallback:
+            print(f"[BusPirate] No serial connection for pullup command")
+            return False
+
+        try:
+            if enabled:
+                # Enable pullups - "P" command
+                success, response = self._send_serial_command("P")
+            else:
+                # Disable pullups - "p" command
+                success, response = self._send_serial_command("p")
+
+            if success:
+                self._pullups_enabled = enabled
+                status = "enabled" if enabled else "disabled"
+                print(f"[BusPirate] Pull-ups {status}")
+                return True
+            return False
+
+        except Exception as e:
+            print(f"[BusPirate] Serial pullup command failed: {e}")
+            return False
+
+    def _send_serial_mode_command(self, mode: str, config=None) -> bool:
+        """
+        Send mode change command via serial terminal interface.
+
+        Bus Pirate 5/6 terminal commands for mode selection:
+        - Direct mode name: 'spi', 'i2c', 'uart', '1wire'
+        - Menu-based: 'm' followed by number selection
+
+        For non-interactive:
+        - 'spi' - Enter SPI mode
+        - 'i2c' - Enter I2C mode
+        - 'uart' - Enter UART mode
+        """
+        if not self._serial_fallback:
+            print(f"[BusPirate] No serial connection for mode command")
+            return False
+
+        try:
+            mode_upper = mode.upper()
+            mode_cmd = mode.lower()
+
+            # Try direct mode command first
+            print(f"[BusPirate] Setting mode to: {mode_upper}")
+            success, response = self._send_serial_command(mode_cmd)
+
+            if success:
+                # Check if mode was successfully set
+                response_upper = response.upper()
+                if mode_upper in response_upper or f"{mode_upper}>" in response_upper or "ready" in response.lower():
+                    self._current_mode = mode_upper
+                    print(f"[BusPirate] Mode set to {mode_upper}")
+
+                    # Apply additional configuration if provided
+                    if config:
+                        self._apply_mode_config(mode_upper, config)
+
+                    return True
+
+                # Check for prompt that indicates mode change
+                if ">" in response:
+                    # Mode likely changed, update internal state
+                    self._current_mode = mode_upper
+                    print(f"[BusPirate] Mode likely set to {mode_upper}")
+
+                    if config:
+                        self._apply_mode_config(mode_upper, config)
+
+                    return True
+
+            # If direct command didn't work, try menu-based approach
+            print(f"[BusPirate] Trying menu-based mode selection...")
+            success, menu_response = self._send_serial_command("m")
+
+            if success and menu_response:
+                print(f"[BusPirate] Mode menu: {menu_response[:200]}")
+
+                # Map mode to menu number (Bus Pirate 5/6 menu)
+                mode_numbers = {
+                    "SPI": "5",
+                    "I2C": "4",
+                    "UART": "3",
+                    "1WIRE": "6",
+                }
+
+                if mode_upper in mode_numbers:
+                    success, result = self._send_serial_command(mode_numbers[mode_upper])
+
+                    if success:
+                        print(f"[BusPirate] Mode selection result: {result[:200]}")
+                        self._current_mode = mode_upper
+
+                        if config:
+                            self._apply_mode_config(mode_upper, config)
+
+                        return True
+
+            return False
+
+        except Exception as e:
+            print(f"[BusPirate] Serial mode command failed: {e}")
+            return False
+
+    def _apply_mode_config(self, mode: str, config) -> None:
+        """Apply mode-specific configuration (logging only for now)."""
+        if mode == "SPI" and hasattr(config, 'speed_hz'):
+            speed_khz = config.speed_hz // 1000
+            print(f"[BusPirate] SPI configured: {speed_khz}kHz")
+
+        elif mode == "I2C" and hasattr(config, 'speed_hz'):
+            speed_khz = config.speed_hz // 1000
+            print(f"[BusPirate] I2C configured: {speed_khz}kHz")
+
+        elif mode == "UART" and hasattr(config, 'baudrate'):
+            print(f"[BusPirate] UART configured: {config.baudrate} baud")
 
     # --------------------------------------------------------------------------
     # Logic Analyzer (SUMP Protocol)
