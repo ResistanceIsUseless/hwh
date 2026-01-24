@@ -307,28 +307,89 @@ class BusPiratePanel(DevicePanel):
                 yield Button("Measure", id="btn-freq-measure", classes="btn-small")
 
     async def connect(self) -> bool:
-        """Connect to Bus Pirate"""
+        """Connect to Bus Pirate via BPIO2 FlatBuffers protocol"""
         try:
             # Try to get Bus Pirate backend
             from ...backends import get_backend
+            self.log_output(f"[*] Connecting to {self.device_info.name}...")
+            self.log_output(f"[*] Port: {self.device_info.port}")
+
             self._backend = get_backend(self.device_info)
 
             if self._backend:
-                self._backend.connect()
-                self.connected = True
-                self.log_output(f"[+] Connected to {self.device_info.name}")
-                self.log_output(f"[*] Port: {self.device_info.port}")
-                self.log_output(f"[*] Mode: HiZ (safe mode)")
-                return True
+                self.log_output(f"[*] Using BPIO2 FlatBuffers protocol...")
+                success = self._backend.connect()
+
+                if success:
+                    self.connected = True
+                    self.log_output(f"[+] Connected successfully!")
+
+                    # Query device status to display info
+                    await self._query_device_status()
+                    return True
+                else:
+                    self.log_output(f"[!] Backend connection failed")
+                    return False
             else:
                 self.log_output(f"[!] No backend available for {self.device_info.name}")
-                # Still mark as connected for UI testing
-                self.connected = True
-                return True
+                return False
 
         except Exception as e:
             self.log_output(f"[!] Connection failed: {e}")
+            import traceback
+            self.log_output(f"[!] {traceback.format_exc()}")
             return False
+
+    async def _query_device_status(self) -> None:
+        """Query and display device status from BPIO2"""
+        if not self._backend:
+            return
+
+        try:
+            # Get status from backend (simplified format)
+            status = None
+            if hasattr(self._backend, 'get_status'):
+                status = self._backend.get_status()
+
+            if status and not status.get('error'):
+                # Display version info
+                fw_ver = status.get('firmware', 'Unknown')
+                hw_ver = status.get('hardware', 'Unknown')
+                self.log_output(f"[*] Firmware: v{fw_ver}")
+                self.log_output(f"[*] Hardware: v{hw_ver}")
+
+                # Display current mode
+                mode = status.get('mode', 'HiZ')
+                self.current_mode = mode
+                self.log_output(f"[*] Mode: {mode}")
+
+                # Display PSU status
+                psu_enabled = status.get('psu_enabled', False)
+                psu_voltage = status.get('psu_voltage', '3.3V')
+                if psu_enabled:
+                    self.log_output(f"[*] PSU: ON ({psu_voltage})")
+                    self.power_enabled = True
+                else:
+                    self.log_output(f"[*] PSU: OFF")
+                    self.power_enabled = False
+
+                # Display pullups
+                pullups = status.get('pullups_enabled', False)
+                self.pullups_enabled = pullups
+                if pullups:
+                    self.log_output(f"[*] Pull-ups: Enabled")
+
+                # Check if using serial fallback
+                if status.get('serial_fallback'):
+                    self.log_output(f"[!] Note: Using serial fallback (BPIO2 unavailable)")
+
+            else:
+                error = status.get('error', 'Unknown error') if status else 'No response'
+                self.log_output(f"[!] Status error: {error}")
+                self.log_output(f"[*] Mode: HiZ (default)")
+
+        except Exception as e:
+            self.log_output(f"[!] Status query error: {e}")
 
     async def disconnect(self) -> None:
         """Disconnect from Bus Pirate"""
