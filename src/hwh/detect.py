@@ -29,7 +29,7 @@ class DeviceInfo:
 # USB VID:PID mappings for known devices
 # Format: (VID, PID): (name, device_type, capabilities)
 KNOWN_USB_DEVICES = {
-    # ST-Link variants
+    # ST-Link variants (STMicroelectronics VID=0x0483)
     (0x0483, 0x3748): ("ST-Link V2", "stlink", ["swd", "jtag", "debug"]),
     (0x0483, 0x374B): ("ST-Link V2-1", "stlink", ["swd", "jtag", "debug"]),
     (0x0483, 0x374D): ("ST-Link V3 Mini", "stlink", ["swd", "jtag", "debug"]),
@@ -37,12 +37,23 @@ KNOWN_USB_DEVICES = {
     (0x0483, 0x374F): ("ST-Link V3", "stlink", ["swd", "jtag", "debug"]),
     (0x0483, 0x3752): ("ST-Link V2.1", "stlink", ["swd", "jtag", "debug"]),
     (0x0483, 0x3753): ("ST-Link V3", "stlink", ["swd", "jtag", "debug"]),
-    
+
+    # TI Debug Probes (Texas Instruments VID=0x0451)
+    (0x0451, 0xBEF1): ("MSP-FET430UIF", "tilink", ["jtag", "spy-bi-wire", "debug", "flash"]),
+    (0x0451, 0xBEF2): ("MSP-FET430UIF (BSL)", "tilink", ["bsl"]),
+    (0x0451, 0xBEF3): ("MSP-FET", "tilink", ["jtag", "spy-bi-wire", "swd", "debug", "flash", "energytrace"]),
+    (0x0451, 0xBEF4): ("MSP-FET (BSL)", "tilink", ["bsl"]),
+    (0x0451, 0xF432): ("eZ-FET", "tilink", ["jtag", "spy-bi-wire", "debug", "flash"]),
+    (0x0451, 0xF430): ("eZ430-Chronos", "tilink", ["spy-bi-wire", "debug"]),
+    (0x2047, 0x0010): ("XDS100v2", "tilink", ["jtag", "swd", "debug"]),
+    (0x2047, 0x0013): ("XDS100v3", "tilink", ["jtag", "swd", "debug"]),
+    (0x0451, 0xC32A): ("XDS110", "tilink", ["jtag", "swd", "cjtag", "debug", "uart"]),
+
     # Black Magic Probe variants
     (0x1D50, 0x6018): ("Black Magic Probe", "blackmagic", ["swd", "jtag", "debug", "uart"]),
     (0x1D50, 0x6017): ("Black Magic Probe (DFU)", "blackmagic_dfu", ["dfu"]),
     (0x1D50, 0x6024): ("Black Magic Probe V2.3", "blackmagic", ["swd", "jtag", "debug", "uart"]),
-    
+
     # Bus Pirate variants
     (0x1209, 0x7331): ("Bus Pirate 5/6", "buspirate", ["spi", "i2c", "uart", "1wire", "jtag", "psu"]),
     (0x2047, 0x0900): ("Bus Pirate 5", "buspirate", ["spi", "i2c", "uart", "1wire", "jtag", "psu"]),
@@ -189,24 +200,28 @@ def _identify_rp2040_device(device: DeviceInfo) -> DeviceInfo:
 def _deduplicate_devices(devices: list[DeviceInfo]) -> list[DeviceInfo]:
     """Remove duplicate device entries (USB + serial showing same device)."""
     seen = {}
-    
+
     for dev in devices:
         # Key by serial number if available, otherwise by VID:PID:type
+        # This allows merging USB-only detection with serial port detection
         if dev.serial:
             key = (dev.serial, dev.device_type)
         else:
-            key = (dev.vid, dev.pid, dev.device_type, dev.port or dev.usb_path)
-        
+            # Use VID:PID:type as key (without port/usb_path) to allow merging
+            key = (dev.vid, dev.pid, dev.device_type)
+
         if key not in seen:
             seen[key] = dev
         else:
-            # Merge - prefer entry with serial port
+            # Merge - combine information from both entries
             existing = seen[key]
             if dev.port and not existing.port:
                 existing.port = dev.port
             if dev.usb_path and not existing.usb_path:
                 existing.usb_path = dev.usb_path
-    
+            if dev.serial and not existing.serial:
+                existing.serial = dev.serial
+
     return list(seen.values())
 
 
