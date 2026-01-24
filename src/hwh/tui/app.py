@@ -256,46 +256,175 @@ class HwhApp(App):
         await self._create_coordination_tab()
 
     async def _create_coordination_tab(self) -> None:
-        """Create a coordination tab for multi-device operations"""
+        """Create a coordination tab for multi-device glitching operations
+
+        Layout:
+        ┌─────────────────────────────────────────────────────────────┐
+        │ UART Monitor (CH340)      │  Glitcher (Bolt)                │
+        │ ┌─────────────────────┐   │  ┌───────────────────────────┐  │
+        │ │ target output...    │   │  │ Glitch controls          │  │
+        │ └─────────────────────┘   │  └───────────────────────────┘  │
+        ├─────────────────────────────────────────────────────────────┤
+        │ Logic Analyzer (SUMP - Bolt or Bus Pirate)                  │
+        │ ┌─────────────────────────────────────────────────────────┐ │
+        │ │ CH0-7 waveforms                                         │ │
+        │ └─────────────────────────────────────────────────────────┘ │
+        └─────────────────────────────────────────────────────────────┘
+        """
+        from textual.widgets import Log, Input
+        from .panels.logic_analyzer import LogicAnalyzerWidget
+
         tabs = self.query_one("#main-tabs", TabbedContent)
 
         pane = TabPane("Coordination", id="tab-coordination")
         await tabs.add_pane(pane)
 
-        # Build coordination content
+        # Build coordination content - three sections vertically
         coord_content = Vertical(id="coordination-content")
         await pane.mount(coord_content)
 
-        # Header
-        await coord_content.mount(Static("Multi-Device Coordination", classes="section-title"))
-        await coord_content.mount(Static("Coordinate operations across multiple connected devices", classes="section-subtitle"))
+        # === TOP SECTION: UART Monitor + Glitcher side by side ===
+        top_section = Horizontal(id="coord-top-section", classes="coord-top")
+        await coord_content.mount(top_section)
 
-        # Connected devices summary
-        devices_summary = Vertical(id="coord-devices", classes="coord-section")
-        await coord_content.mount(devices_summary)
-        await devices_summary.mount(Static("Connected Devices:", classes="coord-label"))
+        # --- Left: UART Monitor ---
+        uart_section = Vertical(id="coord-uart-section", classes="coord-panel")
+        await top_section.mount(uart_section)
 
-        for device_id, panel in self.connected_panels.items():
-            device_info = self.available_devices.get(device_id)
-            if device_info:
-                caps = ", ".join(device_info.capabilities[:3])
-                await devices_summary.mount(Static(f"  • {device_info.name} [{caps}]", classes="coord-device"))
+        # UART header with device selector
+        uart_header = Horizontal(classes="coord-panel-header")
+        await uart_section.mount(uart_header)
+        await uart_header.mount(Static("UART Monitor", classes="coord-panel-title"))
 
-        # Coordination actions
-        actions_section = Vertical(id="coord-actions", classes="coord-section")
-        await coord_content.mount(actions_section)
-        await actions_section.mount(Static("Coordination Actions:", classes="coord-label"))
+        # Find UART-capable devices
+        uart_devices = [(info.name, device_id) for device_id, info in self.available_devices.items()
+                        if device_id in self.connected_panels and "uart" in info.capabilities]
+        if not uart_devices:
+            uart_devices = [("No UART devices", "none")]
 
-        # Create button row (can't use context manager outside compose())
+        uart_select = Select(uart_devices, id="coord-uart-device", classes="coord-device-select")
+        await uart_header.mount(uart_select)
+
+        # UART log
+        uart_log = Log(id="coord-uart-log", classes="coord-log")
+        uart_log.border_title = "Target Output"
+        await uart_section.mount(uart_log)
+        uart_log.write("[*] Select a UART device to monitor target output\n")
+
+        # UART input
+        uart_input_row = Horizontal(classes="coord-input-row")
+        await uart_section.mount(uart_input_row)
+        await uart_input_row.mount(Input(placeholder="Send to target...", id="coord-uart-input", classes="coord-input"))
+        await uart_input_row.mount(Button("Send", id="coord-uart-send", classes="btn-small"))
+
+        # --- Right: Glitcher Controls ---
+        glitch_section = Vertical(id="coord-glitch-section", classes="coord-panel")
+        await top_section.mount(glitch_section)
+
+        # Glitcher header with device selector
+        glitch_header = Horizontal(classes="coord-panel-header")
+        await glitch_section.mount(glitch_header)
+        await glitch_header.mount(Static("Glitcher", classes="coord-panel-title"))
+
+        # Find glitch-capable devices
+        glitch_devices = [(info.name, device_id) for device_id, info in self.available_devices.items()
+                          if device_id in self.connected_panels and
+                          any(c in info.capabilities for c in ["voltage_glitch", "glitch", "emfi"])]
+        if not glitch_devices:
+            glitch_devices = [("No glitch devices", "none")]
+
+        glitch_select = Select(glitch_devices, id="coord-glitch-device", classes="coord-device-select")
+        await glitch_header.mount(glitch_select)
+
+        # Glitch parameters
+        params_grid = Vertical(classes="coord-params")
+        await glitch_section.mount(params_grid)
+
+        # Width parameter
+        width_row = Horizontal(classes="coord-param-row")
+        await params_grid.mount(width_row)
+        await width_row.mount(Static("Width:", classes="coord-param-label"))
+        await width_row.mount(Input(value="50", id="coord-glitch-width", classes="coord-param-input"))
+        await width_row.mount(Static("cycles (8.3ns/cycle)", classes="coord-param-unit"))
+
+        # Delay parameter
+        delay_row = Horizontal(classes="coord-param-row")
+        await params_grid.mount(delay_row)
+        await delay_row.mount(Static("Delay:", classes="coord-param-label"))
+        await delay_row.mount(Input(value="100", id="coord-glitch-delay", classes="coord-param-input"))
+        await delay_row.mount(Static("cycles", classes="coord-param-unit"))
+
+        # Repeat parameter
+        repeat_row = Horizontal(classes="coord-param-row")
+        await params_grid.mount(repeat_row)
+        await repeat_row.mount(Static("Repeat:", classes="coord-param-label"))
+        await repeat_row.mount(Input(value="1", id="coord-glitch-repeat", classes="coord-param-input"))
+        await repeat_row.mount(Static("times", classes="coord-param-unit"))
+
+        # Glitch status and buttons
+        status_section = Vertical(classes="coord-status-section")
+        await glitch_section.mount(status_section)
+
+        status_row = Horizontal(classes="coord-status-row")
+        await status_section.mount(status_row)
+        await status_row.mount(Static("Status:", classes="coord-status-label"))
+        await status_row.mount(Static("Ready", id="coord-glitch-status", classes="coord-status-value"))
+
         button_row = Horizontal(classes="coord-buttons")
-        await actions_section.mount(button_row)
-        await button_row.mount(Button("Glitch + Monitor", id="coord-glitch-monitor", classes="btn-coord"))
-        await button_row.mount(Button("Parallel Read", id="coord-parallel-read", classes="btn-coord"))
-        await button_row.mount(Button("Sync Triggers", id="coord-sync-triggers", classes="btn-coord"))
+        await status_section.mount(button_row)
+        await button_row.mount(Button("ARM", id="coord-glitch-arm", classes="btn-coord btn-arm"))
+        await button_row.mount(Button("TRIGGER", id="coord-glitch-trigger", classes="btn-coord btn-trigger"))
+        await button_row.mount(Button("DISARM", id="coord-glitch-disarm", classes="btn-coord btn-disarm"))
+
+        # === BOTTOM SECTION: Logic Analyzer ===
+        la_section = Vertical(id="coord-la-section", classes="coord-panel coord-la")
+        await coord_content.mount(la_section)
+
+        # Logic analyzer header
+        la_header = Horizontal(classes="coord-panel-header")
+        await la_section.mount(la_header)
+        await la_header.mount(Static("Logic Analyzer (SUMP)", classes="coord-panel-title"))
+
+        # Find SUMP-capable devices (Bolt has logic analyzer, Bus Pirate has SUMP)
+        la_devices = [(info.name, device_id) for device_id, info in self.available_devices.items()
+                      if device_id in self.connected_panels and
+                      any(c in info.capabilities for c in ["logic_analyzer", "logic"])]
+        if not la_devices:
+            la_devices = [("No LA devices", "none")]
+
+        la_select = Select(la_devices, id="coord-la-device", classes="coord-device-select")
+        await la_header.mount(la_select)
+
+        # LA controls
+        la_controls = Horizontal(classes="coord-la-controls")
+        await la_header.mount(la_controls)
+        await la_controls.mount(Select(
+            [("31.25 MHz", "31250000"), ("10 MHz", "10000000"), ("1 MHz", "1000000"), ("100 kHz", "100000")],
+            value="1000000", id="coord-la-rate", classes="coord-la-select"
+        ))
+        await la_controls.mount(Select(
+            [("1K", "1024"), ("4K", "4096"), ("8K", "8192"), ("16K", "16384")],
+            value="4096", id="coord-la-samples", classes="coord-la-select"
+        ))
+        await la_controls.mount(Button("Capture", id="coord-la-capture", classes="btn-coord"))
+        await la_controls.mount(Button("Demo", id="coord-la-demo", classes="btn-coord"))
+
+        # Logic analyzer widget
+        la_widget = LogicAnalyzerWidget(channels=8, visible_samples=80, id="coord-la-widget")
+        await la_section.mount(la_widget)
+
+        # LA navigation
+        la_nav = Horizontal(classes="coord-la-nav")
+        await la_section.mount(la_nav)
+        await la_nav.mount(Button("◀◀", id="coord-la-left-fast", classes="btn-nav"))
+        await la_nav.mount(Button("◀", id="coord-la-left", classes="btn-nav"))
+        await la_nav.mount(Button("Trigger", id="coord-la-trigger", classes="btn-nav"))
+        await la_nav.mount(Button("▶", id="coord-la-right", classes="btn-nav"))
+        await la_nav.mount(Button("▶▶", id="coord-la-right-fast", classes="btn-nav"))
 
         # Switch to coordination tab
         tabs.active = "tab-coordination"
-        self.notify("Coordination mode - select an operation")
+        self.notify("Coordination mode - UART monitor, glitcher, and logic analyzer")
 
     async def action_toggle_split(self) -> None:
         """Toggle split view mode"""
@@ -637,6 +766,198 @@ class HwhApp(App):
         elif button_id.startswith("disconnect-"):
             device_id = button_id.replace("disconnect-", "")
             await self.disconnect_device(device_id)
+
+        # Coordination tab - UART
+        elif button_id == "coord-uart-send":
+            await self._coord_uart_send()
+
+        # Coordination tab - Glitcher
+        elif button_id == "coord-glitch-arm":
+            await self._coord_glitch_arm()
+        elif button_id == "coord-glitch-trigger":
+            await self._coord_glitch_trigger()
+        elif button_id == "coord-glitch-disarm":
+            await self._coord_glitch_disarm()
+
+        # Coordination tab - Logic Analyzer
+        elif button_id == "coord-la-capture":
+            await self._coord_la_capture()
+        elif button_id == "coord-la-demo":
+            await self._coord_la_demo()
+        elif button_id in ("coord-la-left", "coord-la-left-fast", "coord-la-right", "coord-la-right-fast", "coord-la-trigger"):
+            await self._coord_la_navigate(button_id)
+
+    # -------------------------------------------------------------------------
+    # Coordination Tab Handlers
+    # -------------------------------------------------------------------------
+
+    async def _coord_uart_send(self) -> None:
+        """Send data to selected UART device"""
+        from textual.widgets import Input, Log
+        try:
+            # Get selected device
+            device_select = self.query_one("#coord-uart-device", Select)
+            device_id = device_select.value
+            if device_id == "none" or device_id not in self.connected_panels:
+                self.notify("No UART device selected", severity="warning")
+                return
+
+            # Get input text
+            uart_input = self.query_one("#coord-uart-input", Input)
+            text = uart_input.value
+            if not text:
+                return
+
+            # Get the panel and send data
+            panel = self.connected_panels[device_id]
+            if hasattr(panel, 'backend') and panel.backend:
+                # Use backend's UART write if available
+                if hasattr(panel.backend, 'uart_write'):
+                    await panel.backend.uart_write(text.encode() + b'\n')
+                elif hasattr(panel.backend, 'write'):
+                    panel.backend.write(text.encode() + b'\n')
+
+            # Log what we sent
+            uart_log = self.query_one("#coord-uart-log", Log)
+            uart_log.write(f"> {text}\n")
+            uart_input.value = ""
+
+        except Exception as e:
+            self.notify(f"UART send failed: {e}", severity="error")
+
+    async def _coord_glitch_arm(self) -> None:
+        """Arm the glitcher"""
+        from textual.widgets import Input
+        try:
+            device_select = self.query_one("#coord-glitch-device", Select)
+            device_id = device_select.value
+            if device_id == "none" or device_id not in self.connected_panels:
+                self.notify("No glitch device selected", severity="warning")
+                return
+
+            panel = self.connected_panels[device_id]
+            if hasattr(panel, 'backend') and panel.backend:
+                # Get parameters
+                width = int(self.query_one("#coord-glitch-width", Input).value or "50")
+                delay = int(self.query_one("#coord-glitch-delay", Input).value or "100")
+                repeat = int(self.query_one("#coord-glitch-repeat", Input).value or "1")
+
+                # Configure and arm
+                if hasattr(panel.backend, 'glitch_configure'):
+                    await panel.backend.glitch_configure(width=width, delay=delay, repeat=repeat)
+                if hasattr(panel.backend, 'glitch_arm'):
+                    await panel.backend.glitch_arm()
+
+                # Update status
+                status = self.query_one("#coord-glitch-status", Static)
+                status.update("ARMED")
+                status.styles.color = "#F5A623"
+                self.notify("Glitcher armed")
+        except Exception as e:
+            self.notify(f"Arm failed: {e}", severity="error")
+
+    async def _coord_glitch_trigger(self) -> None:
+        """Manually trigger the glitcher"""
+        try:
+            device_select = self.query_one("#coord-glitch-device", Select)
+            device_id = device_select.value
+            if device_id == "none" or device_id not in self.connected_panels:
+                self.notify("No glitch device selected", severity="warning")
+                return
+
+            panel = self.connected_panels[device_id]
+            if hasattr(panel, 'backend') and panel.backend:
+                if hasattr(panel.backend, 'glitch_trigger'):
+                    await panel.backend.glitch_trigger()
+                    self.notify("Glitch triggered!")
+
+        except Exception as e:
+            self.notify(f"Trigger failed: {e}", severity="error")
+
+    async def _coord_glitch_disarm(self) -> None:
+        """Disarm the glitcher"""
+        try:
+            device_select = self.query_one("#coord-glitch-device", Select)
+            device_id = device_select.value
+            if device_id == "none" or device_id not in self.connected_panels:
+                self.notify("No glitch device selected", severity="warning")
+                return
+
+            panel = self.connected_panels[device_id]
+            if hasattr(panel, 'backend') and panel.backend:
+                if hasattr(panel.backend, 'glitch_disarm'):
+                    await panel.backend.glitch_disarm()
+
+            # Update status
+            status = self.query_one("#coord-glitch-status", Static)
+            status.update("Ready")
+            status.styles.color = "#7FD962"
+            self.notify("Glitcher disarmed")
+
+        except Exception as e:
+            self.notify(f"Disarm failed: {e}", severity="error")
+
+    async def _coord_la_capture(self) -> None:
+        """Start logic analyzer capture"""
+        from .panels.logic_analyzer import LogicAnalyzerWidget
+        try:
+            device_select = self.query_one("#coord-la-device", Select)
+            device_id = device_select.value
+            if device_id == "none" or device_id not in self.connected_panels:
+                self.notify("No logic analyzer device selected", severity="warning")
+                return
+
+            panel = self.connected_panels[device_id]
+
+            # Get capture parameters
+            rate = int(self.query_one("#coord-la-rate", Select).value or "1000000")
+            samples = int(self.query_one("#coord-la-samples", Select).value or "4096")
+
+            if hasattr(panel, 'backend') and panel.backend:
+                # Check for SUMP support
+                if hasattr(panel.backend, 'sump_capture'):
+                    self.notify(f"Capturing {samples} samples at {rate/1e6:.2f} MHz...")
+                    data = await panel.backend.sump_capture(rate=rate, samples=samples)
+
+                    # Update the LA widget
+                    la_widget = self.query_one("#coord-la-widget", LogicAnalyzerWidget)
+                    la_widget.set_capture(data)
+                    self.notify("Capture complete")
+                else:
+                    self.notify("Device doesn't support SUMP capture", severity="warning")
+
+        except Exception as e:
+            self.notify(f"Capture failed: {e}", severity="error")
+
+    async def _coord_la_demo(self) -> None:
+        """Load demo data into the logic analyzer"""
+        from .panels.logic_analyzer import LogicAnalyzerWidget
+        try:
+            la_widget = self.query_one("#coord-la-widget", LogicAnalyzerWidget)
+            la_widget.load_demo_data()
+            self.notify("Demo data loaded")
+        except Exception as e:
+            self.notify(f"Demo failed: {e}", severity="error")
+
+    async def _coord_la_navigate(self, button_id: str) -> None:
+        """Handle logic analyzer navigation buttons"""
+        from .panels.logic_analyzer import LogicAnalyzerWidget
+        try:
+            la_widget = self.query_one("#coord-la-widget", LogicAnalyzerWidget)
+
+            if button_id == "coord-la-left":
+                la_widget.scroll_left(10)
+            elif button_id == "coord-la-left-fast":
+                la_widget.scroll_left(50)
+            elif button_id == "coord-la-right":
+                la_widget.scroll_right(10)
+            elif button_id == "coord-la-right-fast":
+                la_widget.scroll_right(50)
+            elif button_id == "coord-la-trigger":
+                la_widget.scroll_to_trigger()
+
+        except Exception as e:
+            self.notify(f"Navigation failed: {e}", severity="error")
 
 
 def run_tui():

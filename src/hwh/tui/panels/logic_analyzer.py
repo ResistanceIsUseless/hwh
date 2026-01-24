@@ -213,6 +213,30 @@ class LogicAnalyzerWidget(Widget):
             self.channel_configs[channel].name = name
             self._update_display()
 
+    def load_demo_data(self) -> None:
+        """Load demo capture data for testing"""
+        import random
+
+        # Generate some demo waveforms
+        samples = []
+        for ch in range(self.num_channels):
+            channel_samples = []
+            state = random.randint(0, 1)
+            for i in range(1000):
+                if random.random() < 0.05:  # 5% chance of transition
+                    state = 1 - state
+                channel_samples.append(state)
+            samples.append(channel_samples)
+
+        capture = LogicCapture(
+            channels=self.num_channels,
+            sample_rate=1000000,
+            samples=samples,
+            trigger_position=100
+        )
+
+        self.set_capture(capture)
+
     @staticmethod
     def decode_spi(
         clk_samples: List[int],
