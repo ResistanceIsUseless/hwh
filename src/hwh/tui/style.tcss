@@ -208,6 +208,83 @@ Tab.-active {
     padding: 1 0;
 }
 
+/* === Power Section Styles === */
+
+.power-controls {
+    height: auto;
+    padding: 1;
+}
+
+.power-group {
+    border: round #2F596D;
+    padding: 1;
+    margin-right: 2;
+    width: auto;
+    min-width: 30;
+}
+
+.power-group-title {
+    color: #9DC3CF;
+    text-style: bold;
+    padding-bottom: 1;
+}
+
+.power-row {
+    height: 3;
+    align: left middle;
+    padding: 0 0 1 0;
+}
+
+.power-label {
+    width: 8;
+    color: #B3B8BB;
+}
+
+.voltage-input {
+    width: 8;
+    margin-right: 1;
+}
+
+.voltage-unit {
+    width: 2;
+    color: #6E7478;
+}
+
+.btn-preset {
+    min-width: 6;
+    margin-right: 1;
+}
+
+.adc-display {
+    height: 3;
+    align: left middle;
+    padding: 1;
+}
+
+.adc-label {
+    width: auto;
+    color: #B3B8BB;
+}
+
+.adc-value {
+    width: 8;
+    color: #7FD962;
+    text-style: bold;
+}
+
+.adc-unit {
+    width: 2;
+    color: #6E7478;
+    margin-right: 2;
+}
+
+.freq-display {
+    color: #6EBFF5;
+    text-style: bold;
+    width: auto;
+    padding-right: 1;
+}
+
 .help-text {
     color: #B3B8BB;
     padding: 0 0 1 0;

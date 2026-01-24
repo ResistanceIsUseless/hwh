@@ -480,22 +480,26 @@ class BusPiratePanel(DevicePanel):
 
             with Horizontal(classes="power-controls"):
                 with Vertical(classes="power-group"):
-                    yield Static("Power Supply")
-                    with Horizontal():
-                        yield Static("Enable:")
+                    yield Static("VOUT Power Supply", classes="power-group-title")
+                    with Horizontal(classes="power-row"):
+                        yield Static("Enable:", classes="power-label")
                         yield Switch(id="power-enable")
-                    with Horizontal():
-                        yield Static("Voltage:")
-                        yield Select(
-                            [("3.3V", "3.3"), ("5V", "5.0"), ("1.8V", "1.8")],
-                            value="3.3",
-                            id="power-voltage"
-                        )
+                    with Horizontal(classes="power-row"):
+                        yield Static("Voltage:", classes="power-label")
+                        yield Input(value="3.3", id="power-voltage-input", classes="voltage-input", placeholder="0.0-5.0")
+                        yield Static("V", classes="voltage-unit")
+                    with Horizontal(classes="power-row"):
+                        yield Static("Preset:", classes="power-label")
+                        yield Button("1.8V", id="btn-vout-18", classes="btn-preset")
+                        yield Button("3.3V", id="btn-vout-33", classes="btn-preset")
+                        yield Button("5.0V", id="btn-vout-50", classes="btn-preset")
+                    with Horizontal(classes="power-row"):
+                        yield Button("Apply Voltage", id="btn-vout-apply", classes="btn-action")
 
                 with Vertical(classes="power-group"):
-                    yield Static("Pull-ups")
-                    with Horizontal():
-                        yield Static("Enable:")
+                    yield Static("Pull-ups", classes="power-group-title")
+                    with Horizontal(classes="power-row"):
+                        yield Static("Enable:", classes="power-label")
                         yield Switch(id="pullup-enable")
 
             yield Static("ADC Measurement", classes="section-subtitle")
@@ -815,7 +819,17 @@ Available commands:
         elif button_id == "btn-uart-detect":
             await self._uart_auto_detect()
 
-        # Power tab
+        # Power tab - VOUT controls
+        elif button_id == "btn-vout-18":
+            self._set_voltage_input("1.8")
+        elif button_id == "btn-vout-33":
+            self._set_voltage_input("3.3")
+        elif button_id == "btn-vout-50":
+            self._set_voltage_input("5.0")
+        elif button_id == "btn-vout-apply":
+            await self._apply_vout_voltage()
+
+        # Power tab - other controls
         elif button_id == "btn-adc-read":
             await self._read_adc()
         elif button_id == "btn-adc-monitor":
@@ -1072,6 +1086,49 @@ Available commands:
         except Exception as e:
             self.log_output(f"[!] Voltage change error: {e}")
 
+    def _set_voltage_input(self, voltage: str) -> None:
+        """Set the voltage input field to a preset value"""
+        try:
+            voltage_input = self.query_one("#power-voltage-input", Input)
+            voltage_input.value = voltage
+        except Exception:
+            pass
+
+    def _get_voltage_from_input(self) -> float:
+        """Get voltage from input field, clamped to 0.0-5.0 range"""
+        try:
+            voltage_input = self.query_one("#power-voltage-input", Input)
+            voltage = float(voltage_input.value or "3.3")
+            # Clamp to valid range
+            return max(0.0, min(5.0, voltage))
+        except (ValueError, Exception):
+            return 3.3  # Default
+
+    async def _apply_vout_voltage(self) -> None:
+        """Apply the voltage from the input field"""
+        if not self._backend:
+            self.log_output("[!] Not connected")
+            return
+
+        try:
+            voltage = self._get_voltage_from_input()
+            voltage_mv = int(voltage * 1000)
+
+            # Enable PSU with the specified voltage
+            if self._backend.set_psu(enabled=True, voltage_mv=voltage_mv):
+                self.power_enabled = True
+                self.log_output(f"[+] VOUT set to {voltage:.2f}V")
+                # Update the switch to reflect enabled state
+                try:
+                    power_switch = self.query_one("#power-enable", Switch)
+                    power_switch.value = True
+                except Exception:
+                    pass
+            else:
+                self.log_output(f"[!] Failed to set VOUT to {voltage:.2f}V")
+        except Exception as e:
+            self.log_output(f"[!] VOUT error: {e}")
+
     async def _toggle_power(self, enabled: bool) -> None:
         """Toggle power supply"""
         if not self._backend:
@@ -1079,14 +1136,14 @@ Available commands:
             return
 
         try:
-            # Get voltage from power-voltage select
-            voltage_str = self._get_select_value("power-voltage", "3.3")
-            voltage_mv = int(float(voltage_str) * 1000)
+            # Get voltage from input field
+            voltage = self._get_voltage_from_input()
+            voltage_mv = int(voltage * 1000)
 
             if self._backend.set_psu(enabled=enabled, voltage_mv=voltage_mv):
                 self.power_enabled = enabled
                 if enabled:
-                    self.log_output(f"[+] PSU enabled: {voltage_str}V")
+                    self.log_output(f"[+] PSU enabled: {voltage:.2f}V")
                 else:
                     self.log_output("[-] PSU disabled")
             else:
