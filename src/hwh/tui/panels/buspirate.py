@@ -122,46 +122,86 @@ class BusPiratePanel(DevicePanel):
             yield from self._build_console_section()
 
     def _build_status_section(self) -> ComposeResult:
-        """Device status display - shows BPIO2 device information"""
-        with Vertical(id="status-container"):
-            yield Static("Device Status", classes="section-title")
-            yield Static("Connection and firmware information from BPIO2", classes="help-text")
-
+        """Device status display - shows comprehensive BPIO2 device information"""
+        with Vertical(id="status-container", classes="status-container"):
+            # Refresh button at top
             with Horizontal(classes="button-row"):
                 yield Button("Refresh", id="btn-status-refresh", classes="btn-action")
 
-            # Status display grid
-            with Grid(classes="status-grid", id="status-grid"):
-                # Version info
-                yield Static("Firmware:", classes="status-label")
-                yield Static("---", id="status-firmware", classes="status-value")
-                yield Static("Hardware:", classes="status-label")
-                yield Static("---", id="status-hardware", classes="status-value")
+            # Version Information group
+            with Container(classes="status-group"):
+                yield Static("Version Information", classes="status-group-title")
+                with Grid(classes="status-grid-2col"):
+                    yield Static("FlatBuffers:", classes="status-key")
+                    yield Static("---", id="status-flatbuffers", classes="status-val")
+                    yield Static("Hardware:", classes="status-key")
+                    yield Static("---", id="status-hardware", classes="status-val")
+                    yield Static("Firmware:", classes="status-key")
+                    yield Static("---", id="status-firmware", classes="status-val")
+                    yield Static("Git Hash:", classes="status-key")
+                    yield Static("---", id="status-git-hash", classes="status-val")
+                    yield Static("Build Date:", classes="status-key")
+                    yield Static("---", id="status-build-date", classes="status-val")
 
-                # Mode info
-                yield Static("Mode:", classes="status-label")
-                yield Static("---", id="status-mode", classes="status-value")
-                yield Static("Pin Labels:", classes="status-label")
-                yield Static("---", id="status-pins", classes="status-value")
+            # Mode Information group
+            with Container(classes="status-group"):
+                yield Static("Mode Information", classes="status-group-title")
+                with Grid(classes="status-grid-2col"):
+                    yield Static("Current Mode:", classes="status-key")
+                    yield Static("---", id="status-mode", classes="status-val")
+                    yield Static("Available:", classes="status-key")
+                    yield Static("---", id="status-modes-available", classes="status-val")
+                    yield Static("Bit Order:", classes="status-key")
+                    yield Static("---", id="status-bit-order", classes="status-val")
+                    yield Static("Pin Labels:", classes="status-key")
+                    yield Static("---", id="status-pins", classes="status-val")
+                    yield Static("Max Packet:", classes="status-key")
+                    yield Static("---", id="status-max-packet", classes="status-val")
+                    yield Static("Max Write:", classes="status-key")
+                    yield Static("---", id="status-max-write", classes="status-val")
+                    yield Static("Max Read:", classes="status-key")
+                    yield Static("---", id="status-max-read", classes="status-val")
 
-                # PSU info
-                yield Static("PSU:", classes="status-label")
-                yield Static("---", id="status-psu", classes="status-value")
-                yield Static("Pull-ups:", classes="status-label")
-                yield Static("---", id="status-pullups", classes="status-value")
+            # Power Supply group
+            with Container(classes="status-group"):
+                yield Static("Power Supply", classes="status-group-title")
+                with Grid(classes="status-grid-2col"):
+                    yield Static("PSU Enabled:", classes="status-key")
+                    yield Static("---", id="status-psu", classes="status-val")
+                    yield Static("Set Voltage:", classes="status-key")
+                    yield Static("---", id="status-set-voltage", classes="status-val")
+                    yield Static("Set Current:", classes="status-key")
+                    yield Static("---", id="status-set-current", classes="status-val")
+                    yield Static("Measured V:", classes="status-key")
+                    yield Static("---", id="status-voltage-meas", classes="status-val")
+                    yield Static("Measured I:", classes="status-key")
+                    yield Static("---", id="status-current-meas", classes="status-val")
+                    yield Static("OC Error:", classes="status-key")
+                    yield Static("---", id="status-oc-error", classes="status-val")
+                    yield Static("Pull-ups:", classes="status-key")
+                    yield Static("---", id="status-pullups", classes="status-val")
 
-                # Measured values
-                yield Static("Voltage:", classes="status-label")
-                yield Static("---", id="status-voltage-meas", classes="status-value")
-                yield Static("Current:", classes="status-label")
-                yield Static("---", id="status-current-meas", classes="status-value")
+            # IO Pins group
+            with Container(classes="status-group"):
+                yield Static("IO Pins", classes="status-group-title")
+                with Grid(classes="status-grid-2col"):
+                    yield Static("ADC Values:", classes="status-key")
+                    yield Static("---", id="status-adc-values", classes="status-val")
+                    yield Static("Directions:", classes="status-key")
+                    yield Static("---", id="status-io-directions", classes="status-val")
+                    yield Static("Values:", classes="status-key")
+                    yield Static("---", id="status-io-values", classes="status-val")
 
-            # ADC readings section
-            yield Static("ADC Readings", classes="section-subtitle")
-            with Horizontal(classes="adc-row", id="adc-readings"):
-                for i in range(8):
-                    yield Static(f"IO{i}:", classes="adc-label-small")
-                    yield Static("---", id=f"status-adc-{i}", classes="adc-value-small")
+            # System group
+            with Container(classes="status-group"):
+                yield Static("System", classes="status-group-title")
+                with Grid(classes="status-grid-2col"):
+                    yield Static("LEDs:", classes="status-key")
+                    yield Static("---", id="status-leds", classes="status-val")
+                    yield Static("Disk Size:", classes="status-key")
+                    yield Static("---", id="status-disk-size", classes="status-val")
+                    yield Static("Disk Used:", classes="status-key")
+                    yield Static("---", id="status-disk-used", classes="status-val")
 
     def _build_protocol_section(self) -> ComposeResult:
         """Protocol-specific controls that change based on mode"""
@@ -1124,44 +1164,101 @@ Available commands:
                 status = self._backend.get_full_status()
 
             if status:
-                # Update firmware version
-                fw_ver = f"{status.get('version_firmware_major', '?')}.{status.get('version_firmware_minor', '?')}"
-                self._update_status_field("status-firmware", f"v{fw_ver}")
+                # Version Information
+                fb_ver = f"{status.get('version_flatbuffers_major', '?')}.{status.get('version_flatbuffers_minor', '?')}"
+                self._update_status_field("status-flatbuffers", fb_ver)
 
-                # Update hardware version
                 hw_ver = f"{status.get('version_hardware_major', '?')} REV{status.get('version_hardware_minor', '?')}"
-                self._update_status_field("status-hardware", f"v{hw_ver}")
+                self._update_status_field("status-hardware", hw_ver)
 
-                # Update mode
+                fw_ver = f"{status.get('version_firmware_major', '?')}.{status.get('version_firmware_minor', '?')}"
+                self._update_status_field("status-firmware", fw_ver)
+
+                git_hash = status.get('version_firmware_git_hash', 'N/A')
+                self._update_status_field("status-git-hash", git_hash if git_hash else "N/A")
+
+                build_date = status.get('version_firmware_build_date', 'N/A')
+                self._update_status_field("status-build-date", build_date if build_date else "N/A")
+
+                # Mode Information
                 mode = status.get('mode_current', 'Unknown')
                 self._update_status_field("status-mode", mode)
+                self.current_mode = mode
 
-                # Update pin labels
-                pins = status.get('mode_pin_labels', 'N/A')
-                self._update_status_field("status-pins", str(pins)[:30])
+                modes_available = status.get('modes_available', [])
+                self._update_status_field("status-modes-available", ", ".join(modes_available) if modes_available else "N/A")
 
-                # Update PSU status
+                bit_order = status.get('mode_bit_order', 'N/A')
+                self._update_status_field("status-bit-order", bit_order if bit_order else "MSB")
+
+                pins = status.get('mode_pin_labels', [])
+                pin_str = ", ".join(pins) if pins else "N/A"
+                self._update_status_field("status-pins", pin_str)
+
+                max_packet = status.get('max_packet', 0)
+                self._update_status_field("status-max-packet", f"{max_packet} bytes" if max_packet else "N/A")
+
+                max_write = status.get('max_write', 0)
+                self._update_status_field("status-max-write", f"{max_write} bytes" if max_write else "N/A")
+
+                max_read = status.get('max_read', 0)
+                self._update_status_field("status-max-read", f"{max_read} bytes" if max_read else "N/A")
+
+                # Power Supply
                 psu_enabled = status.get('psu_enabled', False)
-                psu_mv = status.get('psu_set_mv', 0)
-                if psu_enabled:
-                    self._update_status_field("status-psu", f"ON ({psu_mv}mV)")
-                else:
-                    self._update_status_field("status-psu", "OFF")
+                self._update_status_field("status-psu", "Yes" if psu_enabled else "No", "status-val-on" if psu_enabled else "status-val-off")
+                self.power_enabled = psu_enabled
 
-                # Update pullups
-                pullups = status.get('pullup_enabled', False)
-                self._update_status_field("status-pullups", "Enabled" if pullups else "Disabled")
+                set_mv = status.get('psu_set_mv', 0)
+                self._update_status_field("status-set-voltage", f"{set_mv} mV")
 
-                # Update measured values
+                set_ma = status.get('psu_set_ma', 0)
+                self._update_status_field("status-set-current", f"{set_ma} mA")
+
                 meas_mv = status.get('psu_measured_mv', 0)
-                meas_ma = status.get('psu_measured_ma', 0)
-                self._update_status_field("status-voltage-meas", f"{meas_mv}mV")
-                self._update_status_field("status-current-meas", f"{meas_ma}mA")
+                self._update_status_field("status-voltage-meas", f"{meas_mv} mV")
 
-                # Update ADC values
+                meas_ma = status.get('psu_measured_ma', 0)
+                self._update_status_field("status-current-meas", f"{meas_ma} mA")
+
+                oc_error = status.get('psu_error_overcurrent', False)
+                self._update_status_field("status-oc-error", "Yes" if oc_error else "No", "status-val-error" if oc_error else "")
+
+                pullups = status.get('pullup_enabled', False)
+                self._update_status_field("status-pullups", "Enabled" if pullups else "Disabled", "status-val-on" if pullups else "status-val-off")
+                self.pullups_enabled = pullups
+
+                # IO Pins
                 adc_values = status.get('adc_mv', [])
-                for i, val in enumerate(adc_values[:8]):
-                    self._update_status_field(f"status-adc-{i}", f"{val}mV")
+                if adc_values:
+                    adc_str = ", ".join(f"{v}mV" for v in adc_values[:8])
+                    self._update_status_field("status-adc-values", adc_str)
+                else:
+                    self._update_status_field("status-adc-values", "N/A")
+
+                io_dir = status.get('io_direction', 0)
+                if isinstance(io_dir, int):
+                    dir_strs = [f"IO{i}:{'OUT' if (io_dir >> i) & 1 else 'IN'}" for i in range(8)]
+                    self._update_status_field("status-io-directions", ", ".join(dir_strs))
+                else:
+                    self._update_status_field("status-io-directions", str(io_dir))
+
+                io_val = status.get('io_value', 0)
+                if isinstance(io_val, int):
+                    val_strs = [f"IO{i}:{'HIGH' if (io_val >> i) & 1 else 'LOW'}" for i in range(8)]
+                    self._update_status_field("status-io-values", ", ".join(val_strs))
+                else:
+                    self._update_status_field("status-io-values", str(io_val))
+
+                # System
+                leds = status.get('leds', 'N/A')
+                self._update_status_field("status-leds", str(leds) if leds is not None else "N/A")
+
+                disk_size = status.get('disk_size', 0)
+                self._update_status_field("status-disk-size", f"{disk_size / 1024 / 1024:.2f} MB" if disk_size else "N/A")
+
+                disk_used = status.get('disk_used', 0)
+                self._update_status_field("status-disk-used", f"{disk_used / 1024 / 1024:.2f} MB" if disk_used else "N/A")
 
                 self.log_output("[+] Status refreshed")
 
@@ -1172,7 +1269,7 @@ Available commands:
                     self._update_status_field("status-firmware", simple_status.get('firmware', 'N/A'))
                     self._update_status_field("status-hardware", simple_status.get('hardware', 'N/A'))
                     self._update_status_field("status-mode", simple_status.get('mode', 'HiZ'))
-                    self._update_status_field("status-psu", "ON" if simple_status.get('psu_enabled') else "OFF")
+                    self._update_status_field("status-psu", "Yes" if simple_status.get('psu_enabled') else "No")
                     self._update_status_field("status-pullups", "Enabled" if simple_status.get('pullups_enabled') else "Disabled")
 
                     if simple_status.get('serial_fallback'):
@@ -1185,11 +1282,16 @@ Available commands:
         except Exception as e:
             self.log_output(f"[!] Status refresh error: {e}")
 
-    def _update_status_field(self, field_id: str, value: str) -> None:
-        """Update a status field in the Status tab"""
+    def _update_status_field(self, field_id: str, value: str, css_class: str = "") -> None:
+        """Update a status field in the Status tab with optional styling"""
         try:
             field = self.query_one(f"#{field_id}", Static)
             field.update(value)
+            # Apply CSS class if provided (for on/off/error styling)
+            if css_class:
+                # Remove previous state classes and add new one
+                field.remove_class("status-val-on", "status-val-off", "status-val-error")
+                field.add_class(css_class)
         except Exception:
             pass  # Field may not exist yet
 

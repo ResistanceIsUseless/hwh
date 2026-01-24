@@ -160,6 +160,49 @@ Tab.-active {
     padding-right: 2;
 }
 
+.device-port {
+    color: #B3B8BB;
+    padding-right: 2;
+}
+
+.connection-status {
+    color: #B3B8BB;
+    padding-left: 1;
+}
+
+/* === Status Bar === */
+
+.status-bar {
+    height: 2;
+    padding: 0 1;
+    background: #1A2428;
+    align: left middle;
+    border-bottom: solid #2F596D;
+}
+
+.status-label {
+    color: #B3B8BB;
+    padding-right: 1;
+}
+
+.status-value {
+    color: #9DC3CF;
+    text-style: bold;
+    padding-right: 1;
+}
+
+.status-separator {
+    color: #3E5A69;
+}
+
+.status-on {
+    color: #5E99AE;
+}
+
+.status-off {
+    color: #B13840;
+}
+
 .section-subtitle {
     color: #9DC3CF;
     padding: 1 0;
@@ -294,8 +337,8 @@ OptionList > .option-list--option-highlighted {
 }
 
 .bolt-top-section {
-    height: auto;
-    min-height: 12;
+    height: 14;
+    max-height: 14;
     padding: 1;
     background: #141618;
 }
@@ -413,6 +456,7 @@ OptionList > .option-list--option-highlighted {
 
 .bolt-main-section {
     height: 1fr;
+    min-height: 20;
 }
 
 .bolt-sidebar {
@@ -671,6 +715,113 @@ Switch.-on > .switch--slider {
     height: 1fr;
     border: round #2F596D;
     border-title-color: #5E99AE;
+}
+
+/* === UART Glitch Attack Styles === */
+
+.section-divider {
+    color: #3E5A69;
+    padding: 1 0;
+}
+
+.glitch-title {
+    color: #B13840;
+    text-style: bold;
+}
+
+.glitch-config-grid {
+    grid-size: 2;
+    grid-columns: 16 1fr;
+    padding: 1;
+    grid-gutter: 1;
+}
+
+.glitch-input-row {
+    align: left middle;
+}
+
+.glitch-input {
+    width: 12;
+}
+
+.glitch-input-small {
+    width: 8;
+}
+
+.config-unit {
+    color: #B3B8BB;
+    padding-left: 1;
+}
+
+.config-hint {
+    color: #5E99AE;
+    padding-left: 1;
+}
+
+.glitch-buttons {
+    padding: 1 0;
+}
+
+.btn-glitch-start {
+    background: #2F596D;
+    color: #9DC3CF;
+    min-width: 16;
+}
+
+.btn-glitch-start:hover {
+    background: #5E99AE;
+    color: #141618;
+}
+
+.btn-glitch-stop {
+    background: #B13840;
+    color: #9DC3CF;
+    min-width: 10;
+}
+
+.btn-glitch-stop:hover {
+    background: #D64550;
+    color: #141618;
+}
+
+.glitch-status-bar {
+    height: 2;
+    padding: 0 1;
+    background: #1A2428;
+    align: left middle;
+}
+
+.glitch-status-text {
+    padding-left: 1;
+    color: #B3B8BB;
+}
+
+.glitch-attempt-count {
+    color: #9DC3CF;
+    text-style: bold;
+}
+
+.glitch-status-idle {
+    color: #B3B8BB;
+}
+
+.glitch-status-running {
+    color: #5E99AE;
+}
+
+.glitch-status-success {
+    color: #4EC54E;
+}
+
+.glitch-status-error {
+    color: #B13840;
+}
+
+.glitch-log {
+    height: 8;
+    border: round #2F596D;
+    border-title-color: #B13840;
+    background: #0A0C0D;
 }
 
 .filter-sidebar {
@@ -1241,6 +1392,584 @@ FilePickerScreen {
     background: #141618;
     color: #5E99AE;
     text-style: bold;
+}
+
+/* === Protocol Tab Styles === */
+
+#protocol-container {
+    padding: 1;
+    height: 100%;
+    overflow-y: auto;
+}
+
+/* Mode selector bar at top of Protocol tab */
+.mode-selector-bar {
+    height: 3;
+    align: left middle;
+    padding: 0 1;
+    background: #2F596D;
+    margin-bottom: 1;
+}
+
+.btn-mode {
+    min-width: 10;
+    margin: 0 1 0 0;
+    background: #141618;
+    color: #9DC3CF;
+    border: none;
+}
+
+.btn-mode:hover {
+    background: #5E99AE;
+    color: #141618;
+}
+
+.btn-mode-active {
+    background: #5E99AE;
+    color: #141618;
+    text-style: bold;
+}
+
+/* Protocol sections - only one visible at a time */
+.protocol-section {
+    border: round #2F596D;
+    margin-bottom: 1;
+    padding: 0;
+    height: auto;
+}
+
+.protocol-header {
+    height: 3;
+    align: left middle;
+    padding: 0 1;
+    background: #2F596D;
+}
+
+.protocol-title-large {
+    width: 12;
+    color: #9DC3CF;
+    text-style: bold;
+}
+
+.power-label-inline, .pullup-label-inline {
+    color: #9DC3CF;
+    padding: 0 1;
+}
+
+.power-switch-inline, .pullup-switch-inline {
+    margin: 0;
+}
+
+.voltage-select-inline {
+    width: 8;
+    margin-right: 1;
+}
+
+/* Power label styles */
+.power-label, .pullup-label {
+    color: #9DC3CF;
+    padding: 0 1;
+}
+
+.voltage-select-small {
+    width: 10;
+}
+
+.protocol-controls {
+    padding: 1;
+    height: 1fr;
+}
+
+.config-row {
+    height: 3;
+    align: left middle;
+    margin-bottom: 1;
+}
+
+.config-label {
+    color: #9DC3CF;
+    width: auto;
+    padding-right: 1;
+}
+
+.config-select {
+    width: 20;
+    margin-right: 2;
+}
+
+.input-row {
+    height: 3;
+    align: left middle;
+}
+
+.input-label {
+    color: #9DC3CF;
+    width: auto;
+    padding-right: 1;
+}
+
+.hex-input {
+    width: 12;
+    margin-right: 2;
+}
+
+.file-input {
+    width: 20;
+}
+
+.device-log {
+    height: 8;
+    border: round #2F596D;
+    margin-top: 1;
+}
+
+.uart-input-row {
+    height: 3;
+    margin-top: 1;
+}
+
+.uart-input {
+    width: 1fr;
+    margin-right: 1;
+}
+
+#uart-terminal {
+    height: 1fr;
+    min-height: 10;
+    border: round #2F596D;
+    background: #0a0a0a;
+}
+
+#i2c-device-log {
+    height: 6;
+    border: round #2F596D;
+    background: #0a0a0a;
+}
+
+/* === Pinout Display === */
+
+.pinout-container {
+    height: auto;
+    margin: 1 0;
+    padding: 0 1;
+}
+
+.pinout-diagram {
+    color: #5E99AE;
+    background: #1A1D1F;
+    border: round #2F596D;
+    padding: 1;
+    height: auto;
+}
+
+/* === Bus Pirate Compact Header === */
+
+.bp-header {
+    width: 100%;
+    height: 2;
+    align: left middle;
+    padding: 0 1;
+    background: #2F596D;
+}
+
+.bp-controls {
+    width: 100%;
+    height: 3;
+    align: left middle;
+    padding: 0 1;
+    background: #1E3A47;
+}
+
+.bp-device-name {
+    width: auto;
+    color: #9DC3CF;
+    text-style: bold;
+    padding-right: 1;
+}
+
+.header-sep {
+    color: #5E99AE;
+}
+
+.header-label {
+    color: #B3B8BB;
+    padding: 0 1 0 0;
+}
+
+.btn-mode-compact {
+    min-width: 6;
+    height: 1;
+    margin: 0 1 0 0;
+    padding: 0 1;
+    background: #141618;
+    color: #9DC3CF;
+    border: none;
+}
+
+.btn-mode-compact:hover {
+    background: #5E99AE;
+    color: #141618;
+}
+
+.btn-mode-compact.active {
+    background: #5E99AE;
+    color: #141618;
+    text-style: bold;
+}
+
+.header-power-switch, .header-pullup-switch {
+    margin: 0 1 0 0;
+}
+
+.header-voltage-select {
+    width: 8;
+    margin-right: 1;
+}
+
+.header-psu-status {
+    color: #B3B8BB;
+    width: auto;
+    padding: 0 1;
+}
+
+/* === Bus Pirate Pinout Bar === */
+
+.bp-pinout-bar {
+    width: 100%;
+    height: 2;
+    align: left middle;
+    padding: 0 1;
+    background: #1A1D1F;
+    border-bottom: solid #2F596D;
+}
+
+.pin-box {
+    min-width: 5;
+    text-align: center;
+    color: #B3B8BB;
+    padding: 0 1;
+    margin: 0;
+}
+
+.pin-box.active {
+    color: #5E99AE;
+    text-style: bold;
+}
+
+.pin-box.high {
+    color: #5E99AE;
+    background: #2F596D;
+}
+
+.pin-box.low {
+    color: #B13840;
+}
+
+.pin-vout {
+    color: #B13840;
+}
+
+.pin-vout.on {
+    color: #5E99AE;
+    text-style: bold;
+}
+
+.pin-gnd {
+    color: #B3B8BB;
+}
+
+.mode-indicator {
+    color: #9DC3CF;
+    text-style: bold;
+    padding: 0 1;
+}
+
+/* === Compact Protocol Styles === */
+
+.config-row-compact {
+    height: 2;
+    align: left middle;
+    margin-bottom: 0;
+    padding: 0 1;
+}
+
+.config-label-sm {
+    color: #B3B8BB;
+    width: auto;
+    padding-right: 1;
+}
+
+.config-select-sm {
+    width: 12;
+    margin-right: 1;
+}
+
+.button-row-compact {
+    height: 2;
+    align: left middle;
+    padding: 0 1;
+    margin-bottom: 1;
+}
+
+.btn-sm {
+    min-width: 8;
+    height: 1;
+    margin: 0 1 0 0;
+    padding: 0 1;
+    background: #2F596D;
+    color: #9DC3CF;
+    border: none;
+}
+
+.btn-sm:hover {
+    background: #5E99AE;
+    color: #141618;
+}
+
+.btn-glitch {
+    background: #B13840;
+    color: white;
+}
+
+.btn-glitch:hover {
+    background: #9DC3CF;
+    color: #B13840;
+}
+
+.input-row-compact {
+    height: 2;
+    align: left middle;
+    padding: 0 1;
+}
+
+.input-label-sm {
+    color: #B3B8BB;
+    width: auto;
+    padding-right: 1;
+}
+
+.hex-input-sm {
+    width: 10;
+    margin-right: 1;
+}
+
+.file-input-sm {
+    width: 16;
+}
+
+.device-log-compact {
+    height: 8;
+    border: round #2F596D;
+    background: #0a0a0a;
+}
+
+.uart-log-compact {
+    height: 1fr;
+    min-height: 8;
+    border: round #2F596D;
+    background: #0a0a0a;
+}
+
+.uart-input-row-compact {
+    height: 2;
+    padding: 0 1;
+}
+
+.glitch-section {
+    border-top: solid #2F596D;
+    padding: 1;
+    margin-top: 1;
+}
+
+.section-subtitle-sm {
+    color: #B13840;
+    text-style: bold;
+    padding-bottom: 1;
+}
+
+.glitch-config-compact {
+    height: 2;
+    align: left middle;
+}
+
+.glitch-input-sm {
+    width: 8;
+    margin-right: 1;
+}
+
+.config-unit-sm {
+    color: #B3B8BB;
+    padding-right: 2;
+}
+
+.glitch-buttons-compact {
+    height: 2;
+    align: left middle;
+    margin-top: 1;
+}
+
+.glitch-log-compact {
+    height: 6;
+    border: round #2F596D;
+    background: #0a0a0a;
+    margin-top: 1;
+}
+
+/* === Bus Pirate Status Tab === */
+
+#status-container {
+    height: 100%;
+    overflow-y: auto;
+    padding: 1;
+}
+
+.status-header {
+    height: 3;
+    align: left middle;
+    padding: 0 1;
+    margin-bottom: 1;
+}
+
+.status-header .section-title {
+    width: 1fr;
+}
+
+.status-content {
+    height: auto;
+}
+
+.status-group {
+    margin-bottom: 1;
+    border: round #2F596D;
+    padding: 1;
+}
+
+.status-group-title {
+    color: #5E99AE;
+    text-style: bold;
+    padding-bottom: 1;
+}
+
+.status-grid {
+    grid-size: 4;
+    grid-columns: 14 1fr 14 1fr;
+    padding: 0;
+    grid-gutter: 0 1;
+}
+
+.status-grid-2col {
+    grid-size: 2;
+    grid-columns: 14 1fr;
+    padding: 0;
+    grid-gutter: 0 1;
+}
+
+.status-key {
+    color: #B3B8BB;
+    text-align: right;
+    padding-right: 1;
+}
+
+.status-val {
+    color: #9DC3CF;
+    text-style: bold;
+}
+
+.status-val-wide {
+    column-span: 3;
+}
+
+.status-val-on {
+    color: #5E99AE;
+}
+
+.status-val-off {
+    color: #B13840;
+}
+
+.status-val-error {
+    color: #B13840;
+    text-style: bold;
+}
+
+/* === Bolt Logic Analyzer === */
+
+.logic-controls {
+    height: 3;
+    align: left middle;
+    padding: 0 1;
+}
+
+.logic-trigger-row {
+    height: 3;
+    align: left middle;
+    padding: 0 1;
+}
+
+.logic-port-row {
+    height: 3;
+    align: left middle;
+    padding: 0 1;
+}
+
+.logic-label {
+    width: auto;
+    padding: 0 1;
+    color: #B3B8BB;
+}
+
+.logic-select {
+    width: 16;
+    margin-right: 1;
+}
+
+.logic-port-input {
+    width: 1fr;
+}
+
+.logic-buttons {
+    height: 3;
+    align: left middle;
+    padding: 0 1;
+}
+
+.logic-buttons Button {
+    margin-right: 1;
+}
+
+.logic-waveform {
+    height: auto;
+    min-height: 12;
+    margin: 1;
+    border: round #2F596D;
+    padding: 1;
+}
+
+.logic-status {
+    height: 1;
+    padding: 0 1;
+    color: #5E99AE;
+}
+
+/* Logic Analyzer Widget */
+.logic-analyzer {
+    height: auto;
+}
+
+.logic-scale {
+    color: #666;
+    height: 1;
+}
+
+.logic-channel {
+    color: #5E99AE;
+    height: 1;
+}
+
+.logic-hint {
+    color: #666;
+    height: 1;
+    text-align: center;
 }
 
 /* === Hidden class === */
