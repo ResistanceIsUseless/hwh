@@ -166,14 +166,14 @@ class HwhApp(App):
     SUB_TITLE = f"v{__version__}"
 
     BINDINGS = [
-        Binding("q", "quit", "Quit"),
-        Binding("r", "refresh_devices", "Refresh"),
-        Binding("d", "show_devices", "Devices"),
-        Binding("f", "show_firmware", "Firmware"),
-        Binding("s", "toggle_split", "Split"),
-        Binding("c", "show_coordination", "Coordination"),
+        Binding("q", "quit", "Quit", priority=False),
+        Binding("r", "refresh_devices", "Refresh", priority=False),
+        Binding("d", "show_devices", "Devices", priority=False),
+        Binding("f", "show_firmware", "Firmware", priority=False),
+        Binding("s", "toggle_split", "Split", priority=False),
+        Binding("c", "show_coordination", "Coordination", priority=False),
         Binding("escape", "show_devices", "Discovery"),
-        Binding("?", "show_help", "Help"),
+        Binding("?", "show_help", "Help", priority=False),
     ]
 
     def __init__(self):
