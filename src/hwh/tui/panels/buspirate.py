@@ -204,80 +204,211 @@ class BusPiratePanel(DevicePanel):
                     yield Static("---", id="status-disk-used", classes="status-val")
 
     def _build_protocol_section(self) -> ComposeResult:
-        """Protocol-specific controls that change based on mode"""
-        with Container(id="protocol-container"):
-            # SPI controls (shown when SPI mode selected)
-            with Container(id="spi-controls", classes="protocol-controls"):
-                yield Static("SPI Configuration", classes="section-title")
-                with Grid(classes="config-grid"):
-                    yield Static("Speed:")
-                    yield Select(
-                        [("1MHz", "1000000"), ("4MHz", "4000000"), ("8MHz", "8000000")],
-                        value="1000000",
-                        id="spi-speed"
-                    )
-                    yield Static("Mode:")
-                    yield Select(
-                        [("0 (CPOL=0,CPHA=0)", "0"), ("1", "1"), ("2", "2"), ("3", "3")],
-                        value="0",
-                        id="spi-mode"
-                    )
-                    yield Static("CS Active:")
-                    yield Select([("Low", "low"), ("High", "high")], value="low", id="spi-cs")
+        """Protocol-specific controls with subtabs for SPI, I2C, UART"""
+        with TabbedContent(id="protocol-tabs"):
+            # SPI Tab
+            with TabPane("SPI", id="tab-spi"):
+                yield from self._build_spi_subtab()
 
-                with Horizontal(classes="button-row"):
-                    yield Button("Read Flash ID", id="btn-spi-id", classes="btn-action")
-                    yield Button("Dump Flash", id="btn-spi-dump", classes="btn-action")
-                    yield Button("Erase", id="btn-spi-erase", classes="btn-action")
-                    yield Button("Write", id="btn-spi-write", classes="btn-action")
+            # I2C Tab
+            with TabPane("I2C", id="tab-i2c"):
+                yield from self._build_i2c_subtab()
 
-                with Horizontal(classes="input-row"):
-                    yield Static("Address:")
-                    yield Input(value="0x000000", id="spi-addr", classes="hex-input")
-                    yield Static("Size:")
-                    yield Input(value="0x1000", id="spi-size", classes="hex-input")
-                    yield Static("File:")
-                    yield Input(value="dump.bin", id="spi-file", classes="file-input")
+            # UART Tab
+            with TabPane("UART", id="tab-uart"):
+                yield from self._build_uart_subtab()
 
-            # I2C controls
-            with Container(id="i2c-controls", classes="protocol-controls hidden"):
-                yield Static("I2C Configuration", classes="section-title")
-                with Grid(classes="config-grid"):
-                    yield Static("Speed:")
-                    yield Select(
-                        [("100kHz", "100000"), ("400kHz", "400000"), ("1MHz", "1000000")],
-                        value="100000",
-                        id="i2c-speed"
-                    )
-                    yield Static("Address:")
-                    yield Input(value="0x50", id="i2c-addr", classes="hex-input")
+    def _build_power_control_row(self, prefix: str) -> ComposeResult:
+        """Build a power control row with voltage switch and dropdown"""
+        with Horizontal(classes="power-control-row"):
+            yield Static("VOUT:", classes="power-label")
+            yield Switch(id=f"{prefix}-power-switch", value=False)
+            yield Select(
+                [("3.3V", "3300"), ("5.0V", "5000"), ("1.8V", "1800"), ("2.5V", "2500")],
+                value="3300",
+                id=f"{prefix}-voltage-select",
+                classes="voltage-select-sm"
+            )
+            yield Static("Pull-ups:", classes="pullup-label")
+            yield Switch(id=f"{prefix}-pullup-switch", value=False)
 
-                with Horizontal(classes="button-row"):
-                    yield Button("Scan Bus", id="btn-i2c-scan", classes="btn-action")
-                    yield Button("Read Byte", id="btn-i2c-read", classes="btn-action")
-                    yield Button("Write Byte", id="btn-i2c-write", classes="btn-action")
-                    yield Button("Dump EEPROM", id="btn-i2c-dump", classes="btn-action")
+    def _build_spi_subtab(self) -> ComposeResult:
+        """Build SPI protocol subtab with pinout and controls"""
+        with Vertical(classes="protocol-subtab"):
+            # Power control row
+            yield from self._build_power_control_row("spi")
 
-            # UART controls
-            with Container(id="uart-controls", classes="protocol-controls hidden"):
-                yield Static("UART Configuration", classes="section-title")
-                with Grid(classes="config-grid"):
-                    yield Static("Baud:")
-                    yield Select(
-                        [("9600", "9600"), ("115200", "115200"), ("230400", "230400"), ("921600", "921600")],
-                        value="115200",
-                        id="uart-baud"
-                    )
-                    yield Static("Format:")
-                    yield Select(
-                        [("8N1", "8N1"), ("8E1", "8E1"), ("8O1", "8O1"), ("7E1", "7E1")],
-                        value="8N1",
-                        id="uart-format"
-                    )
+            # SPI Pinout diagram
+            with Container(classes="pinout-box"):
+                yield Static("SPI Pinout", classes="pinout-title")
+                yield Static(
+                    "┌─────────────────────────────────────────────────────────────┐\n"
+                    "│  Pin 1    2     3     4     5     6     7     8     9    10 │\n"
+                    "│  VOUT   IO0   IO1   IO2   IO3   IO4   IO5   IO6   IO7   GND │\n"
+                    "│         └─────────────────┘     MISO   CS   CLK  MOSI       │\n"
+                    "│              Auxiliary                                      │\n"
+                    "└─────────────────────────────────────────────────────────────┘\n"
+                    "  IO4=MISO (Master In)    IO6=CLK (Clock)\n"
+                    "  IO5=CS (Chip Select)    IO7=MOSI (Master Out)",
+                    id="spi-pinout",
+                    classes="pinout-diagram"
+                )
 
-                with Horizontal(classes="button-row"):
-                    yield Button("Bridge Mode", id="btn-uart-bridge", classes="btn-action")
-                    yield Button("Auto Baud", id="btn-uart-auto", classes="btn-action")
+            # SPI Configuration
+            yield Static("Configuration", classes="section-subtitle")
+            with Horizontal(classes="config-row"):
+                yield Static("Speed:", classes="config-label")
+                yield Select(
+                    [("1MHz", "1000000"), ("2MHz", "2000000"), ("4MHz", "4000000"),
+                     ("8MHz", "8000000"), ("16MHz", "16000000"), ("24MHz", "24000000")],
+                    value="1000000",
+                    id="spi-speed",
+                    classes="config-select"
+                )
+                yield Static("Mode:", classes="config-label")
+                yield Select(
+                    [("0 (CPOL=0,CPHA=0)", "0"), ("1 (CPOL=0,CPHA=1)", "1"),
+                     ("2 (CPOL=1,CPHA=0)", "2"), ("3 (CPOL=1,CPHA=1)", "3")],
+                    value="0",
+                    id="spi-mode",
+                    classes="config-select"
+                )
+                yield Static("CS:", classes="config-label")
+                yield Select([("Active Low", "low"), ("Active High", "high")], value="low", id="spi-cs", classes="config-select-sm")
+
+            # Flash Operations
+            yield Static("Flash Operations", classes="section-subtitle")
+            with Horizontal(classes="button-row"):
+                yield Button("Read ID", id="btn-spi-id", classes="btn-action")
+                yield Button("Dump", id="btn-spi-dump", classes="btn-action")
+                yield Button("Erase", id="btn-spi-erase", classes="btn-action btn-danger")
+                yield Button("Write", id="btn-spi-write", classes="btn-action btn-danger")
+
+            with Horizontal(classes="input-row"):
+                yield Static("Addr:", classes="input-label")
+                yield Input(value="0x000000", id="spi-addr", classes="hex-input")
+                yield Static("Size:", classes="input-label")
+                yield Input(value="0x1000", id="spi-size", classes="hex-input")
+                yield Static("File:", classes="input-label")
+                yield Input(value="dump.bin", id="spi-file", classes="file-input")
+
+            # Output log
+            yield Log(id="spi-log", classes="protocol-log")
+
+    def _build_i2c_subtab(self) -> ComposeResult:
+        """Build I2C protocol subtab with pinout and controls"""
+        with Vertical(classes="protocol-subtab"):
+            # Power control row
+            yield from self._build_power_control_row("i2c")
+
+            # I2C Pinout diagram
+            with Container(classes="pinout-box"):
+                yield Static("I2C Pinout", classes="pinout-title")
+                yield Static(
+                    "┌─────────────────────────────────────────────────────────────┐\n"
+                    "│  Pin 1    2     3     4     5     6     7     8     9    10 │\n"
+                    "│  VOUT   IO0   IO1   IO2   IO3   IO4   IO5   IO6   IO7   GND │\n"
+                    "│         SDA   SCL         AUX                               │\n"
+                    "│                                                             │\n"
+                    "└─────────────────────────────────────────────────────────────┘\n"
+                    "  IO0=SDA (Data)     IO1=SCL (Clock)\n"
+                    "  Enable pull-ups for I2C (typical 4.7kΩ to VOUT)",
+                    id="i2c-pinout",
+                    classes="pinout-diagram"
+                )
+
+            # I2C Configuration
+            yield Static("Configuration", classes="section-subtitle")
+            with Horizontal(classes="config-row"):
+                yield Static("Speed:", classes="config-label")
+                yield Select(
+                    [("100kHz (Standard)", "100000"), ("400kHz (Fast)", "400000"),
+                     ("1MHz (Fast+)", "1000000")],
+                    value="100000",
+                    id="i2c-speed",
+                    classes="config-select"
+                )
+                yield Static("Address:", classes="config-label")
+                yield Input(value="0x50", id="i2c-addr", classes="hex-input")
+
+            # I2C Operations
+            yield Static("Operations", classes="section-subtitle")
+            with Horizontal(classes="button-row"):
+                yield Button("Scan Bus", id="btn-i2c-scan", classes="btn-action")
+                yield Button("Read", id="btn-i2c-read", classes="btn-action")
+                yield Button("Write", id="btn-i2c-write", classes="btn-action")
+                yield Button("Dump EEPROM", id="btn-i2c-dump", classes="btn-action")
+
+            with Horizontal(classes="input-row"):
+                yield Static("Register:", classes="input-label")
+                yield Input(value="0x00", id="i2c-reg", classes="hex-input")
+                yield Static("Length:", classes="input-label")
+                yield Input(value="1", id="i2c-len", classes="hex-input-sm")
+                yield Static("Data:", classes="input-label")
+                yield Input(value="0x00", id="i2c-data", classes="hex-input")
+
+            # Output log
+            yield Log(id="i2c-log", classes="protocol-log")
+
+    def _build_uart_subtab(self) -> ComposeResult:
+        """Build UART protocol subtab with pinout and controls (stub - not implemented in firmware)"""
+        with Vertical(classes="protocol-subtab"):
+            # Power control row
+            yield from self._build_power_control_row("uart")
+
+            # UART Pinout diagram
+            with Container(classes="pinout-box"):
+                yield Static("UART Pinout", classes="pinout-title")
+                yield Static(
+                    "┌─────────────────────────────────────────────────────────────┐\n"
+                    "│  Pin 1    2     3     4     5     6     7     8     9    10 │\n"
+                    "│  VOUT   IO0   IO1   IO2   IO3   IO4   IO5   IO6   IO7   GND │\n"
+                    "│                           AUX    TX    RX                   │\n"
+                    "│                                                             │\n"
+                    "└─────────────────────────────────────────────────────────────┘\n"
+                    "  IO4=TX (BP output → Target RX)\n"
+                    "  IO5=RX (BP input ← Target TX)",
+                    id="uart-pinout",
+                    classes="pinout-diagram"
+                )
+
+            # UART Firmware Warning
+            with Container(classes="warning-box"):
+                yield Static(
+                    "⚠ UART BPIO2 NOT IMPLEMENTED IN FIRMWARE\n"
+                    "UART mode is listed in BPIO2 schema but the firmware handler is not implemented.\n"
+                    "Use terminal commands via the console port for UART operations.",
+                    classes="warning-text"
+                )
+
+            # UART Configuration (stub)
+            yield Static("Configuration", classes="section-subtitle")
+            with Horizontal(classes="config-row"):
+                yield Static("Baud:", classes="config-label")
+                yield Select(
+                    [("9600", "9600"), ("19200", "19200"), ("38400", "38400"),
+                     ("57600", "57600"), ("115200", "115200"), ("230400", "230400"),
+                     ("460800", "460800"), ("921600", "921600")],
+                    value="115200",
+                    id="uart-baud",
+                    classes="config-select"
+                )
+                yield Static("Format:", classes="config-label")
+                yield Select(
+                    [("8N1", "8N1"), ("8E1", "8E1"), ("8O1", "8O1"), ("7E1", "7E1"), ("7O1", "7O1")],
+                    value="8N1",
+                    id="uart-format",
+                    classes="config-select-sm"
+                )
+
+            # UART Operations (limited without BPIO2)
+            yield Static("Operations (via terminal fallback)", classes="section-subtitle")
+            with Horizontal(classes="button-row"):
+                yield Button("Bridge Mode", id="btn-uart-bridge", classes="btn-action")
+                yield Button("Auto Baud", id="btn-uart-auto", classes="btn-action")
+
+            # Output log
+            yield Log(id="uart-log", classes="protocol-log")
 
     def _build_scan_section(self) -> ComposeResult:
         """JTAG/SWD pin scanning controls"""
@@ -727,10 +858,26 @@ Available commands:
 
         value = event.value
 
+        # Power tab switches
         if switch_id == "power-enable":
             await self._toggle_power(value)
         elif switch_id == "pullup-enable":
             await self._toggle_pullups(value)
+
+        # Protocol subtab power switches (SPI/I2C/UART)
+        elif switch_id in ("spi-power-switch", "i2c-power-switch", "uart-power-switch"):
+            # Get the voltage from the corresponding dropdown
+            prefix = switch_id.replace("-power-switch", "")
+            voltage_mv = int(self._get_select_value(f"{prefix}-voltage-select", "3300"))
+            await self._toggle_protocol_power(value, voltage_mv)
+            # Sync other protocol power switches
+            self._sync_protocol_power_switches(value)
+
+        # Protocol subtab pullup switches
+        elif switch_id in ("spi-pullup-switch", "i2c-pullup-switch", "uart-pullup-switch"):
+            await self._toggle_pullups(value)
+            # Sync other pullup switches
+            self._sync_pullup_switches(value)
 
     # --------------------------------------------------------------------------
     # Mode Switching
@@ -752,7 +899,6 @@ Available commands:
                 # HiZ is the default safe mode
                 self.current_mode = "HiZ"
                 self.log_output(f"[+] Mode: HiZ (safe mode)")
-                self._update_protocol_visibility("hiz")
 
             elif mode_upper == "SPI":
                 # Get SPI config from UI
@@ -770,7 +916,6 @@ Available commands:
                 if self._backend.configure_spi(config):
                     self.current_mode = "SPI"
                     self.log_output(f"[+] SPI mode: {int(speed)//1000}kHz, mode {spi_mode}")
-                    self._update_protocol_visibility("spi")
                 else:
                     self.log_output("[!] Failed to configure SPI")
 
@@ -784,7 +929,6 @@ Available commands:
                 if self._backend.configure_i2c(config):
                     self.current_mode = "I2C"
                     self.log_output(f"[+] I2C mode: {int(speed)//1000}kHz")
-                    self._update_protocol_visibility("i2c")
                 else:
                     self.log_output("[!] Failed to configure I2C")
 
@@ -809,7 +953,6 @@ Available commands:
                 if self._backend.configure_uart(config):
                     self.current_mode = "UART"
                     self.log_output(f"[+] UART mode: {baud} {format_str}")
-                    self._update_protocol_visibility("uart")
                 else:
                     self.log_output("[!] Failed to configure UART")
 
@@ -830,29 +973,59 @@ Available commands:
         except Exception:
             return default
 
-    def _update_protocol_visibility(self, mode: str) -> None:
-        """Show/hide protocol-specific controls based on mode"""
+    async def _toggle_protocol_power(self, enabled: bool, voltage_mv: int = 3300) -> None:
+        """Toggle power from protocol subtab switches"""
+        if not self._backend:
+            self.log_output("[!] Not connected")
+            return
+
         try:
-            # Get all protocol control containers
-            spi_controls = self.query_one("#spi-controls", Container)
-            i2c_controls = self.query_one("#i2c-controls", Container)
-            uart_controls = self.query_one("#uart-controls", Container)
+            if self._backend.set_psu(enabled=enabled, voltage_mv=voltage_mv):
+                self.power_enabled = enabled
+                if enabled:
+                    self.log_output(f"[+] PSU enabled: {voltage_mv / 1000:.1f}V")
+                else:
+                    self.log_output("[-] PSU disabled")
+            else:
+                self.log_output(f"[!] Failed to {'enable' if enabled else 'disable'} PSU")
+        except Exception as e:
+            self.log_output(f"[!] Power error: {e}")
 
-            # Hide all first
-            spi_controls.add_class("hidden")
-            i2c_controls.add_class("hidden")
-            uart_controls.add_class("hidden")
+    def _sync_protocol_power_switches(self, value: bool) -> None:
+        """Sync all protocol power switches to the same state"""
+        for prefix in ("spi", "i2c", "uart"):
+            try:
+                switch = self.query_one(f"#{prefix}-power-switch", Switch)
+                if switch.value != value:
+                    switch.value = value
+            except Exception:
+                pass
 
-            # Show the appropriate one
-            if mode == "spi":
-                spi_controls.remove_class("hidden")
-            elif mode == "i2c":
-                i2c_controls.remove_class("hidden")
-            elif mode == "uart":
-                uart_controls.remove_class("hidden")
-
+        # Also sync the main power switch in Power tab
+        try:
+            main_switch = self.query_one("#power-enable", Switch)
+            if main_switch.value != value:
+                main_switch.value = value
         except Exception:
-            pass  # Controls may not exist yet
+            pass
+
+    def _sync_pullup_switches(self, value: bool) -> None:
+        """Sync all pullup switches to the same state"""
+        for prefix in ("spi", "i2c", "uart"):
+            try:
+                switch = self.query_one(f"#{prefix}-pullup-switch", Switch)
+                if switch.value != value:
+                    switch.value = value
+            except Exception:
+                pass
+
+        # Also sync the main pullup switch in Power tab
+        try:
+            main_switch = self.query_one("#pullup-enable", Switch)
+            if main_switch.value != value:
+                main_switch.value = value
+        except Exception:
+            pass
 
     async def _change_voltage(self, voltage_str: str) -> None:
         """Change PSU voltage via header dropdown"""

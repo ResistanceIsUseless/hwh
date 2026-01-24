@@ -1972,6 +1972,97 @@ FilePickerScreen {
     text-align: center;
 }
 
+/* === Protocol Subtabs (SPI/I2C/UART) === */
+
+#protocol-tabs {
+    height: 100%;
+}
+
+.protocol-subtab {
+    padding: 1;
+    height: 100%;
+    overflow-y: auto;
+}
+
+.power-control-row {
+    height: 3;
+    align: left middle;
+    padding: 0 1;
+    margin-bottom: 1;
+    background: #1E3A47;
+    border: round #2F596D;
+}
+
+.power-control-row .power-label {
+    color: #9DC3CF;
+    padding-right: 1;
+}
+
+.power-control-row .pullup-label {
+    color: #9DC3CF;
+    padding: 0 1;
+    margin-left: 2;
+}
+
+.pinout-box {
+    border: round #2F596D;
+    padding: 1;
+    margin-bottom: 1;
+    background: #1A1D1F;
+}
+
+.pinout-title {
+    color: #5E99AE;
+    text-style: bold;
+    padding-bottom: 1;
+}
+
+.pinout-diagram {
+    color: #9DC3CF;
+    background: #141618;
+}
+
+.warning-box {
+    border: round #B13840;
+    padding: 1;
+    margin-bottom: 1;
+    background: #2A1A1A;
+}
+
+.warning-text {
+    color: #B13840;
+}
+
+.protocol-log {
+    height: 8;
+    border: round #2F596D;
+    background: #0a0a0a;
+    margin-top: 1;
+}
+
+.config-select {
+    width: 18;
+    margin-right: 2;
+}
+
+.config-select-sm {
+    width: 12;
+    margin-right: 2;
+}
+
+.hex-input-sm {
+    width: 6;
+    margin-right: 2;
+}
+
+.btn-danger {
+    background: #B13840;
+}
+
+.btn-danger:hover {
+    background: #D64550;
+}
+
 /* === Hidden class === */
 
 .hidden {
