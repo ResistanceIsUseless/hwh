@@ -864,6 +864,21 @@ Available commands:
             # Just store the selection, applied when power is enabled
             pass
 
+        # Protocol subtab voltage selections (spi/i2c/uart-voltage-select)
+        elif select_id in ("spi-voltage-select", "i2c-voltage-select", "uart-voltage-select"):
+            # If power is already enabled, apply the new voltage immediately
+            prefix = select_id.replace("-voltage-select", "")
+            try:
+                power_switch = self.query_one(f"#{prefix}-power-switch", Switch)
+                if power_switch.value:
+                    # Power is on, apply new voltage
+                    voltage_mv = int(value)
+                    await self._toggle_protocol_power(True, voltage_mv)
+                    # Sync other protocol voltage selects
+                    self._sync_protocol_voltage_selects(value)
+            except Exception:
+                pass
+
     async def on_switch_changed(self, event: Switch.Changed) -> None:
         """Handle Switch widget changes"""
         switch_id = event.switch.id
@@ -1064,6 +1079,16 @@ Available commands:
                 main_switch.value = value
         except Exception:
             pass
+
+    def _sync_protocol_voltage_selects(self, value: str) -> None:
+        """Sync all protocol voltage selects to the same value"""
+        for prefix in ("spi", "i2c", "uart"):
+            try:
+                select = self.query_one(f"#{prefix}-voltage-select", Select)
+                if str(select.value) != value:
+                    select.value = value
+            except Exception:
+                pass
 
     async def _change_voltage(self, voltage_str: str) -> None:
         """Change PSU voltage via header dropdown"""
