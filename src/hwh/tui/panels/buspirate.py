@@ -853,10 +853,13 @@ Available commands:
     async def on_switch_changed(self, event: Switch.Changed) -> None:
         """Handle Switch widget changes"""
         switch_id = event.switch.id
+        value = event.value
+
+        # Debug: log all switch events
+        self.log_output(f"[DEBUG] Switch changed: {switch_id} = {value}")
+
         if not switch_id:
             return
-
-        value = event.value
 
         # Power tab switches
         if switch_id == "power-enable":
@@ -869,6 +872,7 @@ Available commands:
             # Get the voltage from the corresponding dropdown
             prefix = switch_id.replace("-power-switch", "")
             voltage_mv = int(self._get_select_value(f"{prefix}-voltage-select", "3300"))
+            self.log_output(f"[DEBUG] Power switch: prefix={prefix}, voltage={voltage_mv}mV")
             await self._toggle_protocol_power(value, voltage_mv)
             # Sync other protocol power switches
             self._sync_protocol_power_switches(value)
@@ -878,6 +882,34 @@ Available commands:
             await self._toggle_pullups(value)
             # Sync other pullup switches
             self._sync_pullup_switches(value)
+
+    async def on_tabbed_content_tab_activated(self, event: TabbedContent.TabActivated) -> None:
+        """Handle tab activation - configure Bus Pirate mode when switching protocol subtabs"""
+        tab_id = event.tab.id if event.tab else None
+        tabbed_content_id = event.tabbed_content.id if event.tabbed_content else None
+
+        # Debug: log all tab activations
+        self.log_output(f"[DEBUG] Tab activated: tab_id={tab_id}, tabbed_content={tabbed_content_id}")
+
+        # Only handle protocol subtab switches
+        if tabbed_content_id != "protocol-tabs":
+            return
+
+        if not self._backend:
+            self.log_output("[!] Not connected - mode not changed on device")
+            return
+
+        # Map tab IDs to modes - Textual generates IDs like "--content-tab-tab-spi"
+        tab_to_mode = {
+            "--content-tab-tab-spi": "SPI",
+            "--content-tab-tab-i2c": "I2C",
+            "--content-tab-tab-uart": "UART",
+        }
+
+        mode = tab_to_mode.get(tab_id)
+        self.log_output(f"[DEBUG] Mapped mode: {mode}")
+        if mode:
+            await self._change_mode(mode)
 
     # --------------------------------------------------------------------------
     # Mode Switching
