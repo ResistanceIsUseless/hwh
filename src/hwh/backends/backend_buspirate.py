@@ -122,6 +122,66 @@ class BusPirateBackend(BusBackend):
             self._serial_fallback = None
             return False
 
+    def _open_serial_fallback_to_port(self, port: str) -> bool:
+        """
+        Open a serial connection to a specific port for fallback mode.
+
+        This is used when BPIO2 is connected but we need terminal access
+        for features not supported in BPIO2 (like UART mode).
+
+        Args:
+            port: Serial port path (e.g., /dev/cu.usbmodem6buspirate1)
+
+        Returns:
+            True if serial connection established successfully
+        """
+        import serial
+        import time
+
+        if not port:
+            return False
+
+        try:
+            print(f"[BusPirate] Opening serial connection to: {port}")
+
+            # Close any existing connection
+            if self._serial_fallback:
+                try:
+                    self._serial_fallback.close()
+                except Exception:
+                    pass
+
+            # Open serial port at 115200 baud (Bus Pirate default)
+            self._serial_fallback = serial.Serial(
+                port,
+                115200,
+                timeout=1,
+                write_timeout=1
+            )
+            time.sleep(0.2)
+
+            # Clear any pending data
+            self._serial_fallback.reset_input_buffer()
+            self._serial_fallback.reset_output_buffer()
+
+            # Send a newline to get a fresh prompt
+            self._serial_fallback.write(b"\r\n")
+            time.sleep(0.3)
+
+            # Read and check response
+            if self._serial_fallback.in_waiting > 0:
+                response = self._serial_fallback.read(self._serial_fallback.in_waiting)
+                response_str = response.decode('utf-8', errors='ignore')
+                print(f"[BusPirate] Terminal response: {response_str[:100]}")
+
+            print(f"[BusPirate] Serial fallback to {port} established")
+            return True
+
+        except Exception as e:
+            print(f"[BusPirate] Serial fallback connection to {port} failed: {e}")
+            self._serial_fallback = None
+            return False
+
     def _send_serial_command(self, command: str, timeout: float = 1.0) -> tuple[bool, str]:
         """
         Send a command via the serial fallback connection and read response.
@@ -291,6 +351,9 @@ class BusPirateBackend(BusBackend):
             # Try 2: Enter binary mode via console
             if not self._enter_binary_mode(console_port):
                 print(f"[BusPirate] Failed to enter binary mode")
+                print(f"[BusPirate] The console port ({console_port}) may be in use by another program")
+                print(f"[BusPirate] Check for: screen, minicom, or other terminal sessions")
+                print(f"[BusPirate] Tip: If you have a terminal open, type 'binmode' then '2' to enable BPIO2")
                 return False
 
             # Try 3: Connect to BPIO2 port after entering binary mode
@@ -405,6 +468,22 @@ class BusPirateBackend(BusBackend):
             "pullups_enabled": self._pullups_enabled,
             "serial_fallback": True
         }
+
+    def get_full_status(self) -> dict[str, Any] | None:
+        """
+        Get full device status from BPIO2 for display in Status tab.
+
+        Returns the raw status_request() response with all fields.
+        Returns None if not connected or BPIO2 is not available.
+        """
+        if not self._connected:
+            return None
+
+        # Only available with BPIO2 client
+        if self._client:
+            return self._client.status_request()
+
+        return None
 
     # --------------------------------------------------------------------------
     # SPI Interface
@@ -561,52 +640,72 @@ class BusPirateBackend(BusBackend):
     # --------------------------------------------------------------------------
 
     def configure_uart(self, config: UARTConfig) -> bool:
-        """Configure UART interface."""
+        """Configure UART interface.
+
+        UART is defined in the BPIO2 FlatBuffers schema, but some firmware
+        versions may not support it. We try BPIO2 first and fall back to
+        terminal serial commands if it fails.
+        """
         if not self._connected:
             return False
 
-        # If BPIO client is available, use it
-        if self._client:
-            # Create UART wrapper if needed
-            if not self._uart:
+        # First, try BPIO2 protocol (UART is in the FlatBuffers schema)
+        # Note: Some firmware versions list UART in modes_available but return
+        # "Invalid mode name" when configuring. We try anyway and fall back if needed.
+        if self._client and BPIOUART is not None:
+            try:
+                print(f"[BusPirate] Trying UART via BPIO2...")
+
+                # Try to configure UART via BPIO2
                 self._uart = BPIOUART(self._client)
+                parity_bool = config.parity != 'N'  # BPIO uses bool for parity
 
-            # Map parity to boolean (UART uses boolean: True=even, False=none)
-            parity = False
-            if config.parity in ('E', 'O'):
-                parity = True
+                success = self._uart.configure(
+                    speed=config.baudrate,
+                    data_bits=config.data_bits,
+                    parity=parity_bool,
+                    stop_bits=config.stop_bits,
+                    flow_control=False,
+                    signal_inversion=False
+                )
 
-            success = self._uart.configure(
-                speed=config.baudrate,
-                data_bits=config.data_bits,
-                parity=parity,
-                stop_bits=config.stop_bits,
-                flow_control=False,
-                signal_inversion=False
-            )
+                if success:
+                    self._current_mode = "UART"
+                    print(f"[BusPirate] UART configured via BPIO2: {config.baudrate} baud")
+                    return True
+                else:
+                    # BPIO2 UART may not be supported in this firmware version
+                    # (returns "Invalid mode name" even though UART is listed)
+                    print(f"[BusPirate] BPIO2 UART not supported in firmware, trying serial fallback...")
+                    self._uart = None
 
-            if success:
-                self._current_mode = "UART"
-                print(f"[BusPirate] UART configured: {config.baudrate} baud, {config.data_bits}{config.parity}{config.stop_bits}")
+            except Exception as e:
+                print(f"[BusPirate] BPIO2 UART error: {e}, trying serial fallback...")
+                self._uart = None
 
-            return success
+        # Fall back to serial terminal commands
+        print(f"[BusPirate] Using terminal commands for UART configuration")
 
-        # Fallback to serial command - configure UART mode with baud rate
+        # Try to establish serial fallback connection if not already open
+        if not self._serial_fallback:
+            console_port = self.device.port
+            if console_port and 'buspirate3' in console_port:
+                console_port = console_port.replace('buspirate3', 'buspirate1')
+            if console_port:
+                self._open_serial_fallback_to_port(console_port)
+
         return self._configure_uart_serial_fallback(config)
 
     def _configure_uart_serial_fallback(self, config: UARTConfig) -> bool:
         """
         Configure UART via serial terminal commands.
 
-        Bus Pirate 5/6 UART configuration flow:
-        1. Select mode via 'm' command or direct 'uart' command
-        2. Configure speed and format
-        3. Enter bridge mode for transparent passthrough
-
-        BP5/6 supports direct commands like:
-        - 'uart' or 'm 3' to enter UART mode
-        - 'uart.speed <baud>' to set baud rate
-        - 'bridge' to enter transparent bridge mode
+        Bus Pirate 5/6 UART configuration flow via 'm' menu:
+        1. Send 'm' to enter mode selection menu
+        2. Select option 3 for UART (menu: 1=HiZ, 2=1WIRE, 3=UART, 4=HDUART, 5=I2C, 6=SPI...)
+        3. Answer "Use previous settings?" prompt with 'n' to configure fresh
+        4. Configure speed, data bits, parity, stop bits, flow control, inversion
+        5. Verify UART> prompt appears
         """
         if not self._serial_fallback:
             print("[BusPirate] No serial connection for UART config")
@@ -615,87 +714,114 @@ class BusPirateBackend(BusBackend):
         try:
             import time
 
-            # First, try to exit any current mode and go to HiZ
-            # Send 'm 1' to ensure we're in a clean state (HiZ mode)
-            if self._current_mode not in (None, "HiZ", "UART"):
-                print("[BusPirate] Exiting current mode...")
-                self._send_serial_command("m 1")
-                time.sleep(0.3)
+            print(f"[BusPirate] Configuring UART: {config.baudrate} baud, {config.data_bits}{config.parity}{config.stop_bits}")
 
-            # Try different methods to enter UART mode
-            # Method 1: Direct 'uart' command (BP5/6 style)
-            print(f"[BusPirate] Configuring UART: {config.baudrate} baud")
-            success, response = self._send_serial_command("uart")
-            time.sleep(0.3)
+            # Clear any pending data
+            self._serial_fallback.reset_input_buffer()
 
-            # Check if we entered UART mode
-            if "UART>" in response:
-                self._current_mode = "UART"
-                print("[BusPirate] Entered UART mode")
-            elif "Select" in response or "mode" in response.lower():
-                # We got a mode selection menu - need to choose UART
-                # BP5/6 menu: 1=HiZ, 2=SPI, 3=I2C, 4=UART, etc.
-                print("[BusPirate] Got mode menu, selecting UART (option 4)")
-                success, response = self._send_serial_command("4")
-                time.sleep(0.3)
-                if "UART>" in response:
-                    self._current_mode = "UART"
-                    print("[BusPirate] Entered UART mode via menu")
+            # Enter mode menu
+            print("[BusPirate] Entering mode menu...")
+            self._send_serial_command("m")
+            time.sleep(0.5)
 
-            # Now configure baud rate
-            # BP5/6 may prompt for baud rate after entering UART mode
-            if "baud" in response.lower() or "speed" in response.lower():
-                # There's a baud rate menu - send the baud rate
-                print(f"[BusPirate] Setting baud rate: {config.baudrate}")
+            # Select UART mode (option 3 in BP5/6 menu)
+            # Menu: 1=HiZ, 2=1WIRE, 3=UART, 4=HDUART, 5=I2C, 6=SPI, 7=2WIRE, 8=3WIRE...
+            print("[BusPirate] Selecting UART (option 3)...")
+            success, response = self._send_serial_command("3")
+            time.sleep(0.5)
 
-                # Map common baud rates to menu options for BP5/6
-                baud_map = {
-                    300: "1", 1200: "2", 2400: "3", 4800: "4",
-                    9600: "5", 19200: "6", 38400: "7", 57600: "8",
-                    115200: "9", 230400: "10", 460800: "11", 921600: "12"
-                }
-
-                if config.baudrate in baud_map:
-                    success, response = self._send_serial_command(baud_map[config.baudrate])
+            # Handle "Use previous settings?" prompt
+            if "previous settings" in response.lower() or "y/n" in response.lower():
+                # Say 'n' to configure with new settings (or 'y' to use previous)
+                # For now, use previous settings if baud matches, otherwise configure new
+                if str(config.baudrate) in response:
+                    print("[BusPirate] Using previous UART settings")
+                    success, response = self._send_serial_command("y")
                 else:
-                    # Try sending raw baud rate
-                    success, response = self._send_serial_command(str(config.baudrate))
+                    print("[BusPirate] Configuring new UART settings...")
+                    success, response = self._send_serial_command("n")
+                time.sleep(0.3)
+
+            # If we said 'n', we need to configure each setting
+            # BP5/6 UART config prompts (in order):
+            # 1. Speed selection (menu or direct entry)
+            # 2. Data bits
+            # 3. Parity
+            # 4. Stop bits
+            # 5. Hardware flow control
+            # 6. Signal inversion
+
+            # Handle speed selection
+            if "speed" in response.lower() or "baud" in response.lower():
+                # Send baud rate directly
+                print(f"[BusPirate] Setting speed: {config.baudrate}")
+                success, response = self._send_serial_command(str(config.baudrate))
                 time.sleep(0.2)
 
-            # Configure data bits, parity, stop bits if prompted
-            # BP5/6 typically uses defaults (8N1) but may prompt
-            if "data" in response.lower() and "bits" in response.lower():
-                # 8 data bits is usually option 1
-                self._send_serial_command("1")
-                time.sleep(0.1)
+            # Handle data bits (usually 8)
+            if "data bits" in response.lower():
+                print(f"[BusPirate] Setting data bits: {config.data_bits}")
+                success, response = self._send_serial_command(str(config.data_bits))
+                time.sleep(0.2)
 
+            # Handle parity
             if "parity" in response.lower():
-                # None parity is usually option 1
-                parity_map = {"N": "1", "E": "2", "O": "3"}
-                self._send_serial_command(parity_map.get(config.parity, "1"))
-                time.sleep(0.1)
+                parity_map = {"N": "1", "E": "2", "O": "3"}  # 1=None, 2=Even, 3=Odd
+                parity_opt = parity_map.get(config.parity, "1")
+                print(f"[BusPirate] Setting parity: {config.parity} (option {parity_opt})")
+                _, response = self._send_serial_command(parity_opt)
+                time.sleep(0.2)
 
-            if "stop" in response.lower():
-                # 1 stop bit is usually option 1
-                stop_map = {1: "1", 2: "2"}
-                self._send_serial_command(stop_map.get(config.stop_bits, "1"))
-                time.sleep(0.1)
+            # Handle stop bits
+            if "stop bits" in response.lower():
+                print(f"[BusPirate] Setting stop bits: {config.stop_bits}")
+                _, response = self._send_serial_command(str(config.stop_bits))
+                time.sleep(0.2)
 
-            # Accept any remaining prompts by pressing enter
-            self._send_serial_command("")
-            time.sleep(0.2)
+            # Handle flow control (usually None = option 1)
+            if "flow control" in response.lower():
+                print("[BusPirate] Setting flow control: None")
+                _, response = self._send_serial_command("1")
+                time.sleep(0.2)
+
+            # Handle signal inversion (usually Non-inverted = option 1)
+            if "inversion" in response.lower():
+                print("[BusPirate] Setting signal inversion: None")
+                _, response = self._send_serial_command("1")
+                time.sleep(0.2)
+
+            # Accept any remaining prompts with Enter
+            for _ in range(3):
+                if ">" not in response:
+                    _, response = self._send_serial_command("")
+                    time.sleep(0.2)
+                else:
+                    break
 
             # Verify we're in UART mode
+            success, response = self._send_serial_command("")
+            time.sleep(0.2)
+
+            if "UART>" in response:
+                self._current_mode = "UART"
+                print(f"[BusPirate] UART configured successfully: {config.baudrate} baud")
+                return True
+
+            # Check one more time
             success, response = self._send_serial_command("")
             if "UART>" in response:
                 self._current_mode = "UART"
                 print(f"[BusPirate] UART configured: {config.baudrate} {config.data_bits}{config.parity}{config.stop_bits}")
                 return True
 
-            # Even if we didn't see UART>, assume success if we got this far
-            self._current_mode = "UART"
-            print(f"[BusPirate] UART mode assumed configured")
-            return True
+            # If we got here but have some prompt, might still be OK
+            if ">" in response:
+                self._current_mode = "UART"
+                print(f"[BusPirate] UART mode likely configured (prompt: {response.strip()[:20]})")
+                return True
+
+            print(f"[BusPirate] UART configuration uncertain - last response: {response[:100]}")
+            return False
 
         except Exception as e:
             print(f"[BusPirate] UART config error: {e}")
@@ -703,7 +829,7 @@ class BusPirateBackend(BusBackend):
             traceback.print_exc()
             return False
 
-    def uart_start_bridge(self) -> bool:
+    def uart_start_bridge(self, require_power: bool = True) -> bool:
         """
         Start transparent UART bridge mode.
 
@@ -714,10 +840,20 @@ class BusPirateBackend(BusBackend):
         BP5/6 bridge command: 'bridge' from UART> prompt
         This enters transparent mode until reset.
 
+        Args:
+            require_power: If True (default), requires PSU to be enabled before
+                          starting bridge mode. This ensures TX/RX pins have power.
+
         Returns:
             True if bridge mode started successfully
         """
         if not self._connected:
+            return False
+
+        # Check if power is enabled (required for TX/RX to work)
+        if require_power and not self._psu_enabled:
+            print("[BusPirate] Cannot start UART bridge: VOUT power not enabled")
+            print("[BusPirate] Enable power supply first to power TX/RX pins")
             return False
 
         # BPIO mode - use the UART bridge feature
