@@ -595,12 +595,37 @@ Available commands:
         if not button_id:
             return
 
-        if button_id == "btn-spi-id":
-            await self._handle_spi_command(["id"])
+        # Status tab
+        if button_id == "btn-status-refresh":
+            await self._refresh_status_display()
+
+        # Protocol tab - SPI
+        elif button_id == "btn-spi-id":
+            await self._spi_read_flash_id()
         elif button_id == "btn-spi-dump":
-            await self._handle_spi_command(["dump"])
+            await self._spi_dump_flash()
+        elif button_id == "btn-spi-erase":
+            await self._spi_erase_flash()
+        elif button_id == "btn-spi-write":
+            await self._spi_write_flash()
+
+        # Protocol tab - I2C
         elif button_id == "btn-i2c-scan":
-            await self._handle_i2c_command(["scan"])
+            await self._i2c_scan_bus()
+        elif button_id == "btn-i2c-read":
+            await self._i2c_read_byte()
+        elif button_id == "btn-i2c-write":
+            await self._i2c_write_byte()
+        elif button_id == "btn-i2c-dump":
+            await self._i2c_dump_eeprom()
+
+        # Protocol tab - UART
+        elif button_id == "btn-uart-bridge":
+            await self._uart_start_bridge()
+        elif button_id == "btn-uart-auto":
+            await self._uart_auto_detect()
+
+        # Logic tab
         elif button_id == "btn-logic-capture":
             await self._start_logic_capture()
         elif button_id == "btn-logic-stop":
@@ -609,13 +634,476 @@ Available commands:
             await self._load_logic_demo()
         elif button_id == "btn-logic-export":
             self.log_output("[*] Export not implemented yet")
+
+        # Scan tab
         elif button_id == "btn-jtag-scan":
             self.log_output("[*] Starting JTAG pin scan...")
             self.log_output("[*] Testing all pin combinations...")
         elif button_id == "btn-swd-scan":
             self.log_output("[*] Starting SWD pin scan...")
-        elif button_id == "btn-status-refresh":
+        elif button_id == "btn-uart-detect":
+            await self._uart_auto_detect()
+
+        # Power tab
+        elif button_id == "btn-adc-read":
+            await self._read_adc()
+        elif button_id == "btn-adc-monitor":
+            self.log_output("[*] ADC monitor not implemented yet")
+        elif button_id == "btn-pwm-start":
+            await self._start_pwm()
+        elif button_id == "btn-pwm-stop":
+            await self._stop_pwm()
+        elif button_id == "btn-freq-measure":
+            self.log_output("[*] Frequency measurement not implemented yet")
+
+    async def on_select_changed(self, event: Select.Changed) -> None:
+        """Handle Select widget changes"""
+        select_id = event.select.id
+        if not select_id:
+            return
+
+        value = str(event.value) if event.value else None
+        if not value:
+            return
+
+        # Mode selection in header
+        if select_id == "mode-select":
+            await self._change_mode(value)
+
+        # Voltage selection in header
+        elif select_id == "voltage-select":
+            await self._change_voltage(value)
+
+        # Power tab voltage
+        elif select_id == "power-voltage":
+            # Just store the selection, applied when power is enabled
+            pass
+
+    async def on_switch_changed(self, event: Switch.Changed) -> None:
+        """Handle Switch widget changes"""
+        switch_id = event.switch.id
+        if not switch_id:
+            return
+
+        value = event.value
+
+        if switch_id == "power-enable":
+            await self._toggle_power(value)
+        elif switch_id == "pullup-enable":
+            await self._toggle_pullups(value)
+
+    # --------------------------------------------------------------------------
+    # Mode Switching
+    # --------------------------------------------------------------------------
+
+    async def _change_mode(self, mode: str) -> None:
+        """Change Bus Pirate protocol mode via BPIO2"""
+        if not self._backend:
+            self.log_output("[!] Not connected")
+            return
+
+        self.log_output(f"[*] Switching to {mode} mode...")
+
+        try:
+            # Map UI mode names to backend method calls
+            mode_upper = mode.upper()
+
+            if mode_upper == "HIZ":
+                # HiZ is the default safe mode
+                self.current_mode = "HiZ"
+                self.log_output(f"[+] Mode: HiZ (safe mode)")
+                self._update_protocol_visibility("hiz")
+
+            elif mode_upper == "SPI":
+                # Get SPI config from UI
+                speed = self._get_select_value("spi-speed", "1000000")
+                spi_mode = self._get_select_value("spi-mode", "0")
+                cs_active = self._get_select_value("spi-cs", "low")
+
+                from ...backends.base import SPIConfig
+                config = SPIConfig(
+                    speed_hz=int(speed),
+                    mode=int(spi_mode),
+                    cs_active_low=(cs_active == "low")
+                )
+
+                if self._backend.configure_spi(config):
+                    self.current_mode = "SPI"
+                    self.log_output(f"[+] SPI mode: {int(speed)//1000}kHz, mode {spi_mode}")
+                    self._update_protocol_visibility("spi")
+                else:
+                    self.log_output("[!] Failed to configure SPI")
+
+            elif mode_upper == "I2C":
+                # Get I2C config from UI
+                speed = self._get_select_value("i2c-speed", "100000")
+
+                from ...backends.base import I2CConfig
+                config = I2CConfig(speed_hz=int(speed))
+
+                if self._backend.configure_i2c(config):
+                    self.current_mode = "I2C"
+                    self.log_output(f"[+] I2C mode: {int(speed)//1000}kHz")
+                    self._update_protocol_visibility("i2c")
+                else:
+                    self.log_output("[!] Failed to configure I2C")
+
+            elif mode_upper == "UART":
+                # Get UART config from UI
+                baud = self._get_select_value("uart-baud", "115200")
+                format_str = self._get_select_value("uart-format", "8N1")
+
+                # Parse format (e.g., "8N1" -> data_bits=8, parity='N', stop_bits=1)
+                data_bits = int(format_str[0])
+                parity = format_str[1]
+                stop_bits = int(format_str[2])
+
+                from ...backends.base import UARTConfig
+                config = UARTConfig(
+                    baudrate=int(baud),
+                    data_bits=data_bits,
+                    parity=parity,
+                    stop_bits=stop_bits
+                )
+
+                if self._backend.configure_uart(config):
+                    self.current_mode = "UART"
+                    self.log_output(f"[+] UART mode: {baud} {format_str}")
+                    self._update_protocol_visibility("uart")
+                else:
+                    self.log_output("[!] Failed to configure UART")
+
+            else:
+                self.log_output(f"[!] Mode {mode} not yet implemented via BPIO2")
+
+            # Refresh status display after mode change
             await self._refresh_status_display()
+
+        except Exception as e:
+            self.log_output(f"[!] Mode change error: {e}")
+
+    def _get_select_value(self, select_id: str, default: str) -> str:
+        """Get value from a Select widget"""
+        try:
+            select = self.query_one(f"#{select_id}", Select)
+            return str(select.value) if select.value else default
+        except Exception:
+            return default
+
+    def _update_protocol_visibility(self, mode: str) -> None:
+        """Show/hide protocol-specific controls based on mode"""
+        try:
+            # Get all protocol control containers
+            spi_controls = self.query_one("#spi-controls", Container)
+            i2c_controls = self.query_one("#i2c-controls", Container)
+            uart_controls = self.query_one("#uart-controls", Container)
+
+            # Hide all first
+            spi_controls.add_class("hidden")
+            i2c_controls.add_class("hidden")
+            uart_controls.add_class("hidden")
+
+            # Show the appropriate one
+            if mode == "spi":
+                spi_controls.remove_class("hidden")
+            elif mode == "i2c":
+                i2c_controls.remove_class("hidden")
+            elif mode == "uart":
+                uart_controls.remove_class("hidden")
+
+        except Exception:
+            pass  # Controls may not exist yet
+
+    async def _change_voltage(self, voltage_str: str) -> None:
+        """Change PSU voltage via header dropdown"""
+        if not self._backend:
+            return
+
+        try:
+            voltage = float(voltage_str)
+            if voltage == 0:
+                # Turn off PSU
+                if self._backend.set_psu(enabled=False):
+                    self.power_enabled = False
+                    self.log_output("[*] PSU disabled")
+            else:
+                # Set voltage and enable
+                voltage_mv = int(voltage * 1000)
+                if self._backend.set_psu(enabled=True, voltage_mv=voltage_mv):
+                    self.power_enabled = True
+                    self.log_output(f"[+] PSU enabled: {voltage}V")
+        except Exception as e:
+            self.log_output(f"[!] Voltage change error: {e}")
+
+    async def _toggle_power(self, enabled: bool) -> None:
+        """Toggle power supply"""
+        if not self._backend:
+            self.log_output("[!] Not connected")
+            return
+
+        try:
+            # Get voltage from power-voltage select
+            voltage_str = self._get_select_value("power-voltage", "3.3")
+            voltage_mv = int(float(voltage_str) * 1000)
+
+            if self._backend.set_psu(enabled=enabled, voltage_mv=voltage_mv):
+                self.power_enabled = enabled
+                if enabled:
+                    self.log_output(f"[+] PSU enabled: {voltage_str}V")
+                else:
+                    self.log_output("[-] PSU disabled")
+            else:
+                self.log_output(f"[!] Failed to {'enable' if enabled else 'disable'} PSU")
+        except Exception as e:
+            self.log_output(f"[!] Power error: {e}")
+
+    async def _toggle_pullups(self, enabled: bool) -> None:
+        """Toggle pull-up resistors"""
+        if not self._backend:
+            self.log_output("[!] Not connected")
+            return
+
+        try:
+            if self._backend.set_pullups(enabled=enabled):
+                self.pullups_enabled = enabled
+                if enabled:
+                    self.log_output("[+] Pull-ups enabled")
+                else:
+                    self.log_output("[-] Pull-ups disabled")
+            else:
+                self.log_output(f"[!] Failed to {'enable' if enabled else 'disable'} pull-ups")
+        except Exception as e:
+            self.log_output(f"[!] Pull-up error: {e}")
+
+    # --------------------------------------------------------------------------
+    # SPI Operations
+    # --------------------------------------------------------------------------
+
+    async def _spi_read_flash_id(self) -> None:
+        """Read SPI flash JEDEC ID"""
+        if not self._backend:
+            self.log_output("[!] Not connected")
+            return
+
+        self.log_output("[*] Reading SPI flash ID...")
+
+        try:
+            # Ensure we're in SPI mode
+            if self.current_mode != "SPI":
+                await self._change_mode("SPI")
+
+            flash_id = self._backend.spi_flash_read_id()
+            if flash_id and len(flash_id) >= 3:
+                mfr = flash_id[0]
+                dev_type = flash_id[1]
+                capacity = flash_id[2]
+
+                # Lookup manufacturer
+                mfr_names = {
+                    0xEF: "Winbond",
+                    0xC2: "Macronix",
+                    0x20: "Micron",
+                    0x01: "Spansion",
+                    0xBF: "SST",
+                    0x1F: "Atmel",
+                }
+                mfr_name = mfr_names.get(mfr, "Unknown")
+
+                self.log_output(f"[+] Flash ID: {flash_id.hex().upper()}")
+                self.log_output(f"    Manufacturer: {mfr_name} (0x{mfr:02X})")
+                self.log_output(f"    Device Type: 0x{dev_type:02X}")
+                self.log_output(f"    Capacity: 0x{capacity:02X}")
+            else:
+                self.log_output("[!] No flash detected or invalid response")
+        except Exception as e:
+            self.log_output(f"[!] SPI ID error: {e}")
+
+    async def _spi_dump_flash(self) -> None:
+        """Dump SPI flash to file"""
+        self.log_output("[*] SPI dump not yet implemented")
+        self.log_output("[*] Use command: spi dump <filename>")
+
+    async def _spi_erase_flash(self) -> None:
+        """Erase SPI flash"""
+        self.log_output("[*] SPI erase not yet implemented")
+        self.log_output("[!] This is a destructive operation - use with caution")
+
+    async def _spi_write_flash(self) -> None:
+        """Write to SPI flash"""
+        self.log_output("[*] SPI write not yet implemented")
+        self.log_output("[!] This is a destructive operation - use with caution")
+
+    # --------------------------------------------------------------------------
+    # I2C Operations
+    # --------------------------------------------------------------------------
+
+    async def _i2c_scan_bus(self) -> None:
+        """Scan I2C bus for devices"""
+        if not self._backend:
+            self.log_output("[!] Not connected")
+            return
+
+        self.log_output("[*] Scanning I2C bus...")
+
+        try:
+            # Ensure we're in I2C mode
+            if self.current_mode != "I2C":
+                await self._change_mode("I2C")
+
+            devices = self._backend.i2c_scan()
+            if devices:
+                self.log_output(f"[+] Found {len(devices)} device(s):")
+                for addr in devices:
+                    self.log_output(f"    0x{addr:02X}")
+            else:
+                self.log_output("[*] No I2C devices found")
+        except Exception as e:
+            self.log_output(f"[!] I2C scan error: {e}")
+
+    async def _i2c_read_byte(self) -> None:
+        """Read byte from I2C device"""
+        if not self._backend:
+            self.log_output("[!] Not connected")
+            return
+
+        try:
+            # Get address from UI
+            addr_str = self._get_input_value("i2c-addr", "0x50")
+            addr = int(addr_str, 16) if addr_str.startswith("0x") else int(addr_str)
+
+            self.log_output(f"[*] Reading from I2C address 0x{addr:02X}...")
+
+            data = self._backend.i2c_read(addr, 1)
+            if data:
+                self.log_output(f"[+] Read: 0x{data[0]:02X}")
+            else:
+                self.log_output("[!] No response from device")
+        except Exception as e:
+            self.log_output(f"[!] I2C read error: {e}")
+
+    async def _i2c_write_byte(self) -> None:
+        """Write byte to I2C device"""
+        self.log_output("[*] I2C write not yet implemented")
+        self.log_output("[*] Use command: i2c write <addr> <data>")
+
+    async def _i2c_dump_eeprom(self) -> None:
+        """Dump I2C EEPROM contents"""
+        self.log_output("[*] I2C EEPROM dump not yet implemented")
+        self.log_output("[*] Use command: i2c dump <addr> <size>")
+
+    def _get_input_value(self, input_id: str, default: str) -> str:
+        """Get value from an Input widget"""
+        try:
+            input_widget = self.query_one(f"#{input_id}", Input)
+            return input_widget.value if input_widget.value else default
+        except Exception:
+            return default
+
+    # --------------------------------------------------------------------------
+    # UART Operations
+    # --------------------------------------------------------------------------
+
+    async def _uart_start_bridge(self) -> None:
+        """Start UART bridge mode"""
+        if not self._backend:
+            self.log_output("[!] Not connected")
+            return
+
+        self.log_output("[*] Starting UART bridge mode...")
+
+        try:
+            # Ensure we're in UART mode
+            if self.current_mode != "UART":
+                await self._change_mode("UART")
+
+            if self._backend.uart_start_bridge():
+                self.log_output("[+] UART bridge mode active")
+                self.log_output("[*] Data is passed through transparently")
+                self.log_output("[*] Reset device to exit bridge mode")
+            else:
+                self.log_output("[!] Failed to start bridge mode")
+        except Exception as e:
+            self.log_output(f"[!] UART bridge error: {e}")
+
+    async def _uart_auto_detect(self) -> None:
+        """Auto-detect UART configuration"""
+        if not self._backend:
+            self.log_output("[!] Not connected")
+            return
+
+        self.log_output("[*] Auto-detecting UART configuration...")
+        self.log_output("[*] Make sure target is transmitting data...")
+
+        try:
+            results = self._backend.uart_auto_detect_quick(
+                test_duration_ms=500,
+                progress_callback=lambda cur, tot, cfg: self._uart_scan_progress(cur, tot, cfg)
+            )
+
+            if results:
+                valid_results = [r for r in results if r.get('likely_valid')]
+                if valid_results:
+                    self.log_output(f"[+] Found {len(valid_results)} likely configuration(s):")
+                    for r in valid_results:
+                        self.log_output(f"    {r['baudrate']} {r['data_bits']}{r['parity']}{r['stop_bits']} ({r['printable_ratio']:.0%} printable)")
+                else:
+                    self.log_output("[*] No valid configurations detected")
+                    self.log_output("[*] Try again with target actively transmitting")
+            else:
+                self.log_output("[*] No data received at any baud rate")
+        except Exception as e:
+            self.log_output(f"[!] UART auto-detect error: {e}")
+
+    def _uart_scan_progress(self, current: int, total: int, config_str: str) -> bool:
+        """Progress callback for UART scan"""
+        if config_str:
+            self.log_output(f"[*] Testing {config_str}... ({current}/{total})")
+        return True  # Continue scanning
+
+    # --------------------------------------------------------------------------
+    # Power/ADC Operations
+    # --------------------------------------------------------------------------
+
+    async def _read_adc(self) -> None:
+        """Read ADC voltage"""
+        if not self._backend:
+            self.log_output("[!] Not connected")
+            return
+
+        try:
+            status = None
+            if hasattr(self._backend, 'get_full_status'):
+                status = self._backend.get_full_status()
+
+            if status:
+                adc_values = status.get('adc_mv', [])
+                if adc_values:
+                    self.log_output("[+] ADC readings:")
+                    for i, val in enumerate(adc_values[:8]):
+                        voltage_v = val / 1000.0
+                        self.log_output(f"    IO{i}: {val}mV ({voltage_v:.2f}V)")
+
+                    # Update the ADC display in Power tab
+                    try:
+                        adc_ch0 = self.query_one("#adc-ch0", Static)
+                        if adc_values:
+                            adc_ch0.update(f"{adc_values[0] / 1000:.2f}")
+                    except Exception:
+                        pass
+                else:
+                    self.log_output("[*] No ADC data available")
+            else:
+                self.log_output("[!] Could not get ADC status")
+        except Exception as e:
+            self.log_output(f"[!] ADC read error: {e}")
+
+    async def _start_pwm(self) -> None:
+        """Start PWM output"""
+        self.log_output("[*] PWM output not yet implemented via BPIO2")
+
+    async def _stop_pwm(self) -> None:
+        """Stop PWM output"""
+        self.log_output("[*] PWM stop not yet implemented via BPIO2")
 
     # --------------------------------------------------------------------------
     # Status Display Functions
