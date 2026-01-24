@@ -1428,34 +1428,37 @@ Available commands:
                 fw_ver = f"{status.get('version_firmware_major', '?')}.{status.get('version_firmware_minor', '?')}"
                 self._update_status_field("status-firmware", fw_ver)
 
-                git_hash = status.get('version_firmware_git_hash', 'N/A')
+                git_hash = status.get('version_firmware_git_hash', '')
                 self._update_status_field("status-git-hash", git_hash if git_hash else "N/A")
 
-                build_date = status.get('version_firmware_build_date', 'N/A')
+                # Use version_firmware_date (correct key from BPIO2)
+                build_date = status.get('version_firmware_date', '')
                 self._update_status_field("status-build-date", build_date if build_date else "N/A")
 
                 # Mode Information
                 mode = status.get('mode_current', 'Unknown')
-                self._update_status_field("status-mode", mode)
-                self.current_mode = mode
+                self._update_status_field("status-mode", mode if mode else "HiZ")
+                self.current_mode = mode if mode else "HiZ"
 
                 modes_available = status.get('modes_available', [])
                 self._update_status_field("status-modes-available", ", ".join(modes_available) if modes_available else "N/A")
 
-                bit_order = status.get('mode_bit_order', 'N/A')
-                self._update_status_field("status-bit-order", bit_order if bit_order else "MSB")
+                # Use mode_bitorder_msb (boolean) from BPIO2
+                bit_order_msb = status.get('mode_bitorder_msb', True)
+                self._update_status_field("status-bit-order", "MSB" if bit_order_msb else "LSB")
 
                 pins = status.get('mode_pin_labels', [])
                 pin_str = ", ".join(pins) if pins else "N/A"
                 self._update_status_field("status-pins", pin_str)
 
-                max_packet = status.get('max_packet', 0)
+                # Use mode_max_* keys (correct from BPIO2)
+                max_packet = status.get('mode_max_packet_size', 0)
                 self._update_status_field("status-max-packet", f"{max_packet} bytes" if max_packet else "N/A")
 
-                max_write = status.get('max_write', 0)
+                max_write = status.get('mode_max_write', 0)
                 self._update_status_field("status-max-write", f"{max_write} bytes" if max_write else "N/A")
 
-                max_read = status.get('max_read', 0)
+                max_read = status.get('mode_max_read', 0)
                 self._update_status_field("status-max-read", f"{max_read} bytes" if max_read else "N/A")
 
                 # Power Supply
@@ -1475,7 +1478,8 @@ Available commands:
                 meas_ma = status.get('psu_measured_ma', 0)
                 self._update_status_field("status-current-meas", f"{meas_ma} mA")
 
-                oc_error = status.get('psu_error_overcurrent', False)
+                # Use psu_current_error (correct key from BPIO2)
+                oc_error = status.get('psu_current_error', False)
                 self._update_status_field("status-oc-error", "Yes" if oc_error else "No", "status-val-error" if oc_error else "")
 
                 pullups = status.get('pullup_enabled', False)
@@ -1504,15 +1508,15 @@ Available commands:
                 else:
                     self._update_status_field("status-io-values", str(io_val))
 
-                # System
-                leds = status.get('leds', 'N/A')
-                self._update_status_field("status-leds", str(leds) if leds is not None else "N/A")
+                # System - use led_count and disk_*_mb (correct keys from BPIO2)
+                led_count = status.get('led_count', 0)
+                self._update_status_field("status-leds", str(led_count) if led_count else "N/A")
 
-                disk_size = status.get('disk_size', 0)
-                self._update_status_field("status-disk-size", f"{disk_size / 1024 / 1024:.2f} MB" if disk_size else "N/A")
+                disk_size_mb = status.get('disk_size_mb', 0)
+                self._update_status_field("status-disk-size", f"{disk_size_mb:.2f} MB" if disk_size_mb else "N/A")
 
-                disk_used = status.get('disk_used', 0)
-                self._update_status_field("status-disk-used", f"{disk_used / 1024 / 1024:.2f} MB" if disk_used else "N/A")
+                disk_used_mb = status.get('disk_used_mb', 0)
+                self._update_status_field("status-disk-used", f"{disk_used_mb:.2f} MB" if disk_used_mb else "N/A")
 
                 self.log_output("[+] Status refreshed")
 
