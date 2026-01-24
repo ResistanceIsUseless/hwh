@@ -327,26 +327,35 @@ class HwhApp(App):
         await split_content.mount(selector_row)
 
         # Build device options from connected panels
-        device_options = [(device_id, info.name) for device_id, info in self.available_devices.items()
-                         if device_id in self.connected_panels]
+        # Note: connected_panels keys should match available_devices keys (device_type or device_type_N)
+        device_options: List[Tuple[str, str]] = []
+        for device_id, info in self.available_devices.items():
+            if device_id in self.connected_panels:
+                device_options.append((info.name, device_id))
+
+        # Debug: if no options found, show available info
+        if not device_options:
+            self.notify(f"No connected devices found. Connected: {list(self.connected_panels.keys())}, Available: {list(self.available_devices.keys())}", severity="warning")
 
         # Left pane selector
         await selector_row.mount(Static("Left:", classes="split-label"))
         left_select = Select(
-            [(name, dev_id) for dev_id, name in device_options],
+            options=device_options if device_options else [("No devices", "none")],
             id="select-left",
             classes="split-select",
-            prompt="Select device"
+            prompt="Select device",
+            allow_blank=True
         )
         await selector_row.mount(left_select)
 
         # Right pane selector
         await selector_row.mount(Static("Right:", classes="split-label"))
         right_select = Select(
-            [(name, dev_id) for dev_id, name in device_options],
+            options=device_options if device_options else [("No devices", "none")],
             id="select-right",
             classes="split-select",
-            prompt="Select device"
+            prompt="Select device",
+            allow_blank=True
         )
         await selector_row.mount(right_select)
 
@@ -420,7 +429,7 @@ class HwhApp(App):
             return
 
         device_id = str(event.value) if event.value else None
-        if not device_id:
+        if not device_id or device_id == "none":
             return
 
         if select_id == "select-left":
