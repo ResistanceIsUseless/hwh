@@ -42,6 +42,10 @@ class SplitPanelMirror(Container):
     This avoids creating duplicate serial connections when showing
     the same device in split view. Instead of opening a new connection,
     it subscribes to output messages from the source panel.
+
+    The mirror shows the source panel's output log and provides basic
+    information about the device. For full control, users should use
+    the device's main tab.
     """
 
     def __init__(self, device_info: DeviceInfo, source_panel: "DevicePanel", *args, **kwargs):
@@ -54,20 +58,29 @@ class SplitPanelMirror(Container):
         from textual.widgets import Log
 
         with Vertical():
-            # Header
+            # Header with device info
             with Horizontal(classes="panel-header"):
-                yield Static(f"{self.device_info.name} (mirror)", classes="device-title")
+                yield Static(f"{self.device_info.name}", classes="device-title")
                 yield Static(f"Port: {self.device_info.port}", classes="device-port")
+                yield Static("(output mirror)", classes="connection-status")
+
+            # Info about what this mirror shows
+            yield Static("Showing output from connected device. Use device tab for full control.", classes="help-text")
 
             # Output log - mirrors the source panel
             self._log_widget = Log(id=f"mirror-log-{id(self)}", classes="uart-log")
-            self._log_widget.border_title = "output (mirrored)"
+            self._log_widget.border_title = "output"
             yield self._log_widget
 
     async def on_mount(self) -> None:
         """Subscribe to output from the source panel when mounted"""
         # Register callback on source panel
         self.source_panel.on_output(self._on_source_output)
+
+        # Write initial message
+        if self._log_widget:
+            self._log_widget.write(f"[*] Mirroring output from {self.device_info.name}\n")
+            self._log_widget.write(f"[*] Use the '{self.device_info.name}' tab for full device controls\n")
 
     def _on_source_output(self, text: str) -> None:
         """Handle output from the source panel"""
@@ -388,13 +401,14 @@ class HwhApp(App):
 
             device_info = self.available_devices.get(device_id)
             if not device_info:
-                await pane.mount(Static("Device not found", classes="split-placeholder"))
+                await pane.mount(Static(f"Device '{device_id}' not found", classes="split-placeholder"))
                 return
 
             # Clean up old panel/mirror in this pane
             old_panel = self.split_panels.get(pane_id)
             if old_panel:
                 await old_panel.disconnect()
+                del self.split_panels[pane_id]
 
             # Check if this device already has a connected panel
             existing_panel = self.connected_panels.get(device_id)
@@ -405,27 +419,33 @@ class HwhApp(App):
                 mirror = SplitPanelMirror(
                     device_info=device_info,
                     source_panel=existing_panel,
-                    id=f"mirror-{pane_id}-{device_id}"
+                    id=f"mirror-{pane_id}-{device_id.replace('/', '_').replace(':', '_')}"
                 )
                 self.split_panels[pane_id] = mirror
                 await pane.mount(mirror)
-                self.notify(f"Mirroring {device_info.name} output")
+                self.notify(f"Showing {device_info.name} output")
 
             else:
-                # No existing panel - create new one with its own connection
-                panel_class = self._get_panel_class(device_info)
-                panel = panel_class(device_info, self, id=f"split-{pane_id}-{device_id}")
-                self.split_panels[pane_id] = panel
-                await pane.mount(panel)
-                await panel.connect()
+                # No existing panel - this shouldn't happen in split view
+                # since we only show connected devices in the selector
+                await pane.mount(Static(f"Device '{device_info.name}' not connected", classes="split-placeholder"))
+                self.notify(f"Device {device_info.name} is not connected", severity="warning")
 
         except Exception as e:
+            import traceback
             self.notify(f"Error updating split pane: {e}", severity="error")
+            # Log traceback to help debug
+            traceback.print_exc()
 
     async def on_select_changed(self, event: Select.Changed) -> None:
-        """Handle device selection in split view"""
+        """Handle device selection in split view (app-level handler)"""
         select_id = event.select.id
         if not select_id:
+            return
+
+        # Only handle split view selectors
+        # Ignore events from other Select widgets (e.g., in device panels)
+        if select_id not in ("select-left", "select-right"):
             return
 
         device_id = str(event.value) if event.value else None

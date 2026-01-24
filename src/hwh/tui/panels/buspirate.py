@@ -855,9 +855,6 @@ Available commands:
         switch_id = event.switch.id
         value = event.value
 
-        # Debug: log all switch events
-        self.log_output(f"[DEBUG] Switch changed: {switch_id} = {value}")
-
         if not switch_id:
             return
 
@@ -872,7 +869,6 @@ Available commands:
             # Get the voltage from the corresponding dropdown
             prefix = switch_id.replace("-power-switch", "")
             voltage_mv = int(self._get_select_value(f"{prefix}-voltage-select", "3300"))
-            self.log_output(f"[DEBUG] Power switch: prefix={prefix}, voltage={voltage_mv}mV")
             await self._toggle_protocol_power(value, voltage_mv)
             # Sync other protocol power switches
             self._sync_protocol_power_switches(value)
@@ -887,9 +883,6 @@ Available commands:
         """Handle tab activation - configure Bus Pirate mode when switching protocol subtabs"""
         tab_id = event.tab.id if event.tab else None
         tabbed_content_id = event.tabbed_content.id if event.tabbed_content else None
-
-        # Debug: log all tab activations
-        self.log_output(f"[DEBUG] Tab activated: tab_id={tab_id}, tabbed_content={tabbed_content_id}")
 
         # Only handle protocol subtab switches
         if tabbed_content_id != "protocol-tabs":
@@ -907,7 +900,6 @@ Available commands:
         }
 
         mode = tab_to_mode.get(tab_id)
-        self.log_output(f"[DEBUG] Mapped mode: {mode}")
         if mode:
             await self._change_mode(mode)
 

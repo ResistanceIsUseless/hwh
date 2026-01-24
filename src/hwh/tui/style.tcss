@@ -952,17 +952,16 @@ Switch.-on > .switch--slider {
 }
 
 .split-label {
-    width: 5;
+    width: 6;
     color: #9DC3CF;
     text-style: bold;
 }
 
 .split-select {
-    width: 16;
-    margin-right: 1;
+    width: 20;
+    margin-right: 2;
     background: #141618;
     color: #9DC3CF;
-    height: 1;
 }
 
 .split-container {
@@ -987,6 +986,20 @@ Switch.-on > .switch--slider {
     width: 1;
     background: #5E99AE;
     color: #5E99AE;
+}
+
+/* Split panel mirror styles */
+SplitPanelMirror {
+    height: 100%;
+}
+
+SplitPanelMirror Vertical {
+    height: 100%;
+}
+
+SplitPanelMirror .uart-log {
+    height: 1fr;
+    min-height: 10;
 }
 
 /* === Coordination Tab === */
