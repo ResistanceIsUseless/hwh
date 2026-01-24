@@ -98,6 +98,10 @@ class BusPiratePanel(DevicePanel):
 
             # Feature tabs within device panel
             with TabbedContent(id="bp-features"):
+                # Status Tab - Device info (first tab for connection verification)
+                with TabPane("Status", id="tab-status"):
+                    yield from self._build_status_section()
+
                 # Protocol Tab - Current mode operations
                 with TabPane("Protocol", id="tab-protocol"):
                     yield from self._build_protocol_section()
@@ -116,6 +120,48 @@ class BusPiratePanel(DevicePanel):
 
             # Console at bottom
             yield from self._build_console_section()
+
+    def _build_status_section(self) -> ComposeResult:
+        """Device status display - shows BPIO2 device information"""
+        with Vertical(id="status-container"):
+            yield Static("Device Status", classes="section-title")
+            yield Static("Connection and firmware information from BPIO2", classes="help-text")
+
+            with Horizontal(classes="button-row"):
+                yield Button("Refresh", id="btn-status-refresh", classes="btn-action")
+
+            # Status display grid
+            with Grid(classes="status-grid", id="status-grid"):
+                # Version info
+                yield Static("Firmware:", classes="status-label")
+                yield Static("---", id="status-firmware", classes="status-value")
+                yield Static("Hardware:", classes="status-label")
+                yield Static("---", id="status-hardware", classes="status-value")
+
+                # Mode info
+                yield Static("Mode:", classes="status-label")
+                yield Static("---", id="status-mode", classes="status-value")
+                yield Static("Pin Labels:", classes="status-label")
+                yield Static("---", id="status-pins", classes="status-value")
+
+                # PSU info
+                yield Static("PSU:", classes="status-label")
+                yield Static("---", id="status-psu", classes="status-value")
+                yield Static("Pull-ups:", classes="status-label")
+                yield Static("---", id="status-pullups", classes="status-value")
+
+                # Measured values
+                yield Static("Voltage:", classes="status-label")
+                yield Static("---", id="status-voltage-meas", classes="status-value")
+                yield Static("Current:", classes="status-label")
+                yield Static("---", id="status-current-meas", classes="status-value")
+
+            # ADC readings section
+            yield Static("ADC Readings", classes="section-subtitle")
+            with Horizontal(classes="adc-row", id="adc-readings"):
+                for i in range(8):
+                    yield Static(f"IO{i}:", classes="adc-label-small")
+                    yield Static("---", id=f"status-adc-{i}", classes="adc-value-small")
 
     def _build_protocol_section(self) -> ComposeResult:
         """Protocol-specific controls that change based on mode"""
@@ -324,8 +370,11 @@ class BusPiratePanel(DevicePanel):
                     self.connected = True
                     self.log_output(f"[+] Connected successfully!")
 
-                    # Query device status to display info
+                    # Query device status to display info in console
                     await self._query_device_status()
+
+                    # Also populate the Status tab
+                    await self._refresh_status_display()
                     return True
                 else:
                     self.log_output(f"[!] Backend connection failed")
@@ -565,6 +614,96 @@ Available commands:
             self.log_output("[*] Testing all pin combinations...")
         elif button_id == "btn-swd-scan":
             self.log_output("[*] Starting SWD pin scan...")
+        elif button_id == "btn-status-refresh":
+            await self._refresh_status_display()
+
+    # --------------------------------------------------------------------------
+    # Status Display Functions
+    # --------------------------------------------------------------------------
+
+    async def _refresh_status_display(self) -> None:
+        """Refresh the status tab with current device information"""
+        if not self._backend:
+            self.log_output("[!] Not connected")
+            return
+
+        self.log_output("[*] Refreshing device status...")
+
+        try:
+            # Get full status from BPIO2
+            status = None
+            if hasattr(self._backend, 'get_full_status'):
+                status = self._backend.get_full_status()
+
+            if status:
+                # Update firmware version
+                fw_ver = f"{status.get('version_firmware_major', '?')}.{status.get('version_firmware_minor', '?')}"
+                self._update_status_field("status-firmware", f"v{fw_ver}")
+
+                # Update hardware version
+                hw_ver = f"{status.get('version_hardware_major', '?')} REV{status.get('version_hardware_minor', '?')}"
+                self._update_status_field("status-hardware", f"v{hw_ver}")
+
+                # Update mode
+                mode = status.get('mode_current', 'Unknown')
+                self._update_status_field("status-mode", mode)
+
+                # Update pin labels
+                pins = status.get('mode_pin_labels', 'N/A')
+                self._update_status_field("status-pins", str(pins)[:30])
+
+                # Update PSU status
+                psu_enabled = status.get('psu_enabled', False)
+                psu_mv = status.get('psu_set_mv', 0)
+                if psu_enabled:
+                    self._update_status_field("status-psu", f"ON ({psu_mv}mV)")
+                else:
+                    self._update_status_field("status-psu", "OFF")
+
+                # Update pullups
+                pullups = status.get('pullup_enabled', False)
+                self._update_status_field("status-pullups", "Enabled" if pullups else "Disabled")
+
+                # Update measured values
+                meas_mv = status.get('psu_measured_mv', 0)
+                meas_ma = status.get('psu_measured_ma', 0)
+                self._update_status_field("status-voltage-meas", f"{meas_mv}mV")
+                self._update_status_field("status-current-meas", f"{meas_ma}mA")
+
+                # Update ADC values
+                adc_values = status.get('adc_mv', [])
+                for i, val in enumerate(adc_values[:8]):
+                    self._update_status_field(f"status-adc-{i}", f"{val}mV")
+
+                self.log_output("[+] Status refreshed")
+
+            else:
+                # Try simplified status
+                simple_status = self._backend.get_status() if hasattr(self._backend, 'get_status') else None
+                if simple_status and not simple_status.get('error'):
+                    self._update_status_field("status-firmware", simple_status.get('firmware', 'N/A'))
+                    self._update_status_field("status-hardware", simple_status.get('hardware', 'N/A'))
+                    self._update_status_field("status-mode", simple_status.get('mode', 'HiZ'))
+                    self._update_status_field("status-psu", "ON" if simple_status.get('psu_enabled') else "OFF")
+                    self._update_status_field("status-pullups", "Enabled" if simple_status.get('pullups_enabled') else "Disabled")
+
+                    if simple_status.get('serial_fallback'):
+                        self.log_output("[!] Limited info (serial fallback mode)")
+                    else:
+                        self.log_output("[+] Status refreshed (simplified)")
+                else:
+                    self.log_output("[!] Could not get device status")
+
+        except Exception as e:
+            self.log_output(f"[!] Status refresh error: {e}")
+
+    def _update_status_field(self, field_id: str, value: str) -> None:
+        """Update a status field in the Status tab"""
+        try:
+            field = self.query_one(f"#{field_id}", Static)
+            field.update(value)
+        except Exception:
+            pass  # Field may not exist yet
 
     # --------------------------------------------------------------------------
     # Logic Analyzer Functions
