@@ -74,6 +74,11 @@ class BusPiratePanel(DevicePanel):
         self._backend = None
         self._logic_widget: Optional[LogicAnalyzerWidget] = None
         self._logic_capturing = False
+        # Live ADC values for pinout display (in mV)
+        self._adc_values: List[int] = [0] * 8
+        self._psu_measured_mv: int = 0
+        self._psu_measured_ma: int = 0
+        self._pinout_refresh_timer = None
 
     def compose(self) -> ComposeResult:
         with Vertical(id="buspirate-panel"):
@@ -219,7 +224,7 @@ class BusPiratePanel(DevicePanel):
                 yield from self._build_uart_subtab()
 
     def _build_power_control_row(self, prefix: str) -> ComposeResult:
-        """Build a power control row with voltage switch and dropdown"""
+        """Build a power control row with voltage switch, dropdown, and live refresh"""
         with Horizontal(classes="power-control-row"):
             yield Static("VOUT:", classes="power-label")
             yield Switch(id=f"{prefix}-power-switch", value=False)
@@ -231,6 +236,8 @@ class BusPiratePanel(DevicePanel):
             )
             yield Static("Pull-ups:", classes="pullup-label")
             yield Switch(id=f"{prefix}-pullup-switch", value=False)
+            yield Button("⟳", id=f"{prefix}-refresh-pinout", classes="btn-refresh-pinout")
+            yield Button("Live", id=f"{prefix}-live-toggle", classes="btn-live-toggle")
 
     def _build_spi_subtab(self) -> ComposeResult:
         """Build SPI protocol subtab with pinout and controls"""
@@ -238,18 +245,11 @@ class BusPiratePanel(DevicePanel):
             # Power control row
             yield from self._build_power_control_row("spi")
 
-            # SPI Pinout diagram
+            # SPI Pinout diagram with live voltage display
             with Container(classes="pinout-box"):
-                yield Static("SPI Pinout", classes="pinout-title")
+                yield Static("SPI Pinout (Live)", classes="pinout-title")
                 yield Static(
-                    "┌─────────────────────────────────────────────────────────────┐\n"
-                    "│  Pin 1    2     3     4     5     6     7     8     9    10 │\n"
-                    "│  VOUT   IO0   IO1   IO2   IO3   IO4   IO5   IO6   IO7   GND │\n"
-                    "│         └─────────────────┘     MISO   CS   CLK  MOSI       │\n"
-                    "│              Auxiliary                                      │\n"
-                    "└─────────────────────────────────────────────────────────────┘\n"
-                    "  IO4=MISO (Master In)    IO6=CLK (Clock)\n"
-                    "  IO5=CS (Chip Select)    IO7=MOSI (Master Out)",
+                    self._build_spi_pinout_ascii(),
                     id="spi-pinout",
                     classes="pinout-diagram"
                 )
@@ -301,18 +301,11 @@ class BusPiratePanel(DevicePanel):
             # Power control row
             yield from self._build_power_control_row("i2c")
 
-            # I2C Pinout diagram
+            # I2C Pinout diagram with live voltage display
             with Container(classes="pinout-box"):
-                yield Static("I2C Pinout", classes="pinout-title")
+                yield Static("I2C Pinout (Live)", classes="pinout-title")
                 yield Static(
-                    "┌─────────────────────────────────────────────────────────────┐\n"
-                    "│  Pin 1    2     3     4     5     6     7     8     9    10 │\n"
-                    "│  VOUT   IO0   IO1   IO2   IO3   IO4   IO5   IO6   IO7   GND │\n"
-                    "│         SDA   SCL         AUX                               │\n"
-                    "│                                                             │\n"
-                    "└─────────────────────────────────────────────────────────────┘\n"
-                    "  IO0=SDA (Data)     IO1=SCL (Clock)\n"
-                    "  Enable pull-ups for I2C (typical 4.7kΩ to VOUT)",
+                    self._build_i2c_pinout_ascii(),
                     id="i2c-pinout",
                     classes="pinout-diagram"
                 )
@@ -356,18 +349,11 @@ class BusPiratePanel(DevicePanel):
             # Power control row
             yield from self._build_power_control_row("uart")
 
-            # UART Pinout diagram
+            # UART Pinout diagram with live voltage display
             with Container(classes="pinout-box"):
-                yield Static("UART Pinout", classes="pinout-title")
+                yield Static("UART Pinout (Live)", classes="pinout-title")
                 yield Static(
-                    "┌─────────────────────────────────────────────────────────────┐\n"
-                    "│  Pin 1    2     3     4     5     6     7     8     9    10 │\n"
-                    "│  VOUT   IO0   IO1   IO2   IO3   IO4   IO5   IO6   IO7   GND │\n"
-                    "│                           AUX    TX    RX                   │\n"
-                    "│                                                             │\n"
-                    "└─────────────────────────────────────────────────────────────┘\n"
-                    "  IO4=TX (BP output → Target RX)\n"
-                    "  IO5=RX (BP input ← Target TX)",
+                    self._build_uart_pinout_ascii(),
                     id="uart-pinout",
                     classes="pinout-diagram"
                 )
@@ -550,6 +536,9 @@ class BusPiratePanel(DevicePanel):
 
                     # Also populate the Status tab
                     await self._refresh_status_display()
+
+                    # Initial ADC refresh for live pinout displays
+                    await self._refresh_adc_values()
                     return True
                 else:
                     self.log_output(f"[!] Backend connection failed")
@@ -617,6 +606,12 @@ class BusPiratePanel(DevicePanel):
 
     async def disconnect(self) -> None:
         """Disconnect from Bus Pirate"""
+        # Stop live pinout updates if running
+        if self._pinout_refresh_timer is not None:
+            self._pinout_refresh_timer.stop()
+            self._pinout_refresh_timer = None
+            self._update_live_button_labels(False)
+
         if self._backend:
             try:
                 self._backend.disconnect()
@@ -833,13 +828,22 @@ Available commands:
         elif button_id == "btn-adc-read":
             await self._read_adc()
         elif button_id == "btn-adc-monitor":
-            self.log_output("[*] ADC monitor not implemented yet")
+            await self._toggle_adc_monitor()
         elif button_id == "btn-pwm-start":
             await self._start_pwm()
         elif button_id == "btn-pwm-stop":
             await self._stop_pwm()
         elif button_id == "btn-freq-measure":
             self.log_output("[*] Frequency measurement not implemented yet")
+
+        # Pinout refresh buttons
+        elif button_id in ("spi-refresh-pinout", "i2c-refresh-pinout", "uart-refresh-pinout"):
+            await self._refresh_adc_values()
+            self.log_output("[+] Pinout voltages refreshed")
+
+        # Live toggle buttons
+        elif button_id in ("spi-live-toggle", "i2c-live-toggle", "uart-live-toggle"):
+            await self._toggle_live_pinout()
 
     async def on_select_changed(self, event: Select.Changed) -> None:
         """Handle Select widget changes"""
@@ -1028,6 +1032,155 @@ Available commands:
             return str(select.value)
         except Exception:
             return default
+
+    # --------------------------------------------------------------------------
+    # Live Pinout Diagram Functions
+    # --------------------------------------------------------------------------
+
+    def _format_voltage(self, mv: int) -> str:
+        """Format millivolt value for display (e.g., '3.3V' or '---')"""
+        if mv <= 0:
+            return "---"
+        elif mv < 1000:
+            return f"{mv}mV"
+        else:
+            return f"{mv/1000:.1f}V"
+
+    def _build_spi_pinout_ascii(self) -> str:
+        """Build SPI pinout ASCII diagram with live voltage values"""
+        # Get live voltage values
+        vout = self._format_voltage(self._psu_measured_mv)
+        v = [self._format_voltage(self._adc_values[i]) if i < len(self._adc_values) else "---" for i in range(8)]
+
+        return (
+            "┌─────────────────────────────────────────────────────────────────────┐\n"
+            "│  Pin 1     2     3     4     5     6     7     8     9    10        │\n"
+            "│  VOUT    IO0   IO1   IO2   IO3   IO4   IO5   IO6   IO7   GND        │\n"
+            f"│  {vout:^5} {v[0]:^5} {v[1]:^5} {v[2]:^5} {v[3]:^5} {v[4]:^5} {v[5]:^5} {v[6]:^5} {v[7]:^5}  0V         │\n"
+            "│          └─────────────────┘     MISO   CS   CLK  MOSI              │\n"
+            "│               Auxiliary                                             │\n"
+            "└─────────────────────────────────────────────────────────────────────┘\n"
+            "  IO4=MISO (Master In)    IO6=CLK (Clock)\n"
+            "  IO5=CS (Chip Select)    IO7=MOSI (Master Out)"
+        )
+
+    def _build_i2c_pinout_ascii(self) -> str:
+        """Build I2C pinout ASCII diagram with live voltage values"""
+        # Get live voltage values
+        vout = self._format_voltage(self._psu_measured_mv)
+        v = [self._format_voltage(self._adc_values[i]) if i < len(self._adc_values) else "---" for i in range(8)]
+
+        return (
+            "┌─────────────────────────────────────────────────────────────────────┐\n"
+            "│  Pin 1     2     3     4     5     6     7     8     9    10        │\n"
+            "│  VOUT    IO0   IO1   IO2   IO3   IO4   IO5   IO6   IO7   GND        │\n"
+            f"│  {vout:^5} {v[0]:^5} {v[1]:^5} {v[2]:^5} {v[3]:^5} {v[4]:^5} {v[5]:^5} {v[6]:^5} {v[7]:^5}  0V         │\n"
+            "│          SDA   SCL         AUX                                      │\n"
+            "│                                                                     │\n"
+            "└─────────────────────────────────────────────────────────────────────┘\n"
+            "  IO0=SDA (Data)     IO1=SCL (Clock)\n"
+            "  Enable pull-ups for I2C (typical 4.7kΩ to VOUT)"
+        )
+
+    def _build_uart_pinout_ascii(self) -> str:
+        """Build UART pinout ASCII diagram with live voltage values"""
+        # Get live voltage values
+        vout = self._format_voltage(self._psu_measured_mv)
+        v = [self._format_voltage(self._adc_values[i]) if i < len(self._adc_values) else "---" for i in range(8)]
+
+        return (
+            "┌─────────────────────────────────────────────────────────────────────┐\n"
+            "│  Pin 1     2     3     4     5     6     7     8     9    10        │\n"
+            "│  VOUT    IO0   IO1   IO2   IO3   IO4   IO5   IO6   IO7   GND        │\n"
+            f"│  {vout:^5} {v[0]:^5} {v[1]:^5} {v[2]:^5} {v[3]:^5} {v[4]:^5} {v[5]:^5} {v[6]:^5} {v[7]:^5}  0V         │\n"
+            "│                            AUX    TX    RX                          │\n"
+            "│                                                                     │\n"
+            "└─────────────────────────────────────────────────────────────────────┘\n"
+            "  IO4=TX (BP output → Target RX)\n"
+            "  IO5=RX (BP input ← Target TX)"
+        )
+
+    async def _refresh_adc_values(self) -> None:
+        """Fetch current ADC values from device and update pinout displays"""
+        if not self._backend or not self.connected:
+            return
+
+        try:
+            # Get full status which includes ADC values
+            status = None
+            if hasattr(self._backend, 'get_full_status'):
+                status = self._backend.get_full_status()
+
+            if status:
+                # Update cached ADC values
+                self._adc_values = status.get('adc_mv', [0] * 8)
+                self._psu_measured_mv = status.get('psu_measured_mv', 0)
+                self._psu_measured_ma = status.get('psu_measured_ma', 0)
+
+                # Update all pinout diagrams
+                self._update_pinout_displays()
+        except Exception as e:
+            # Log errors but don't spam during live updates
+            if self._pinout_refresh_timer is None:
+                self.log_output(f"[!] ADC refresh error: {e}")
+
+    def _update_pinout_displays(self) -> None:
+        """Update all pinout displays with current ADC values"""
+        try:
+            spi_pinout = self.query_one("#spi-pinout", Static)
+            spi_pinout.update(self._build_spi_pinout_ascii())
+        except Exception:
+            pass
+
+        try:
+            i2c_pinout = self.query_one("#i2c-pinout", Static)
+            i2c_pinout.update(self._build_i2c_pinout_ascii())
+        except Exception:
+            pass
+
+        try:
+            uart_pinout = self.query_one("#uart-pinout", Static)
+            uart_pinout.update(self._build_uart_pinout_ascii())
+        except Exception:
+            pass
+
+    async def _toggle_live_pinout(self) -> None:
+        """Toggle live pinout updates on/off"""
+        if self._pinout_refresh_timer is not None:
+            # Stop live updates
+            self._pinout_refresh_timer.stop()
+            self._pinout_refresh_timer = None
+            self.log_output("[-] Live pinout updates stopped")
+            # Update button labels
+            self._update_live_button_labels(False)
+        else:
+            # Start live updates (every 500ms)
+            if not self.connected:
+                self.log_output("[!] Connect to device first to enable live updates")
+                return
+            self._pinout_refresh_timer = self.set_interval(0.5, self._refresh_adc_values)
+            self.log_output("[+] Live pinout updates started (500ms interval)")
+            # Update button labels
+            self._update_live_button_labels(True)
+            # Immediate refresh
+            await self._refresh_adc_values()
+
+    def _update_live_button_labels(self, is_live: bool) -> None:
+        """Update live toggle button labels to show current state"""
+        for prefix in ("spi", "i2c", "uart"):
+            try:
+                btn = self.query_one(f"#{prefix}-live-toggle", Button)
+                btn.label = "Stop" if is_live else "Live"
+                if is_live:
+                    btn.add_class("btn-active")
+                else:
+                    btn.remove_class("btn-active")
+            except Exception:
+                pass
+
+    async def _toggle_adc_monitor(self) -> None:
+        """Toggle ADC monitoring - alias for live pinout toggle"""
+        await self._toggle_live_pinout()
 
     async def _toggle_protocol_power(self, enabled: bool, voltage_mv: int = 3300) -> None:
         """Toggle power from protocol subtab switches"""

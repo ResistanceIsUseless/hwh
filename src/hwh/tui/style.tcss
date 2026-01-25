@@ -2252,6 +2252,43 @@ FilePickerScreen {
     margin-left: 2;
 }
 
+/* Pinout refresh and live toggle buttons */
+.btn-refresh-pinout {
+    min-width: 3;
+    width: 3;
+    height: 1;
+    margin-left: 2;
+    padding: 0;
+    background: #2F596D;
+    color: #9DC3CF;
+}
+
+.btn-refresh-pinout:hover {
+    background: #5E99AE;
+    color: #141618;
+}
+
+.btn-live-toggle {
+    min-width: 5;
+    width: 5;
+    height: 1;
+    margin-left: 1;
+    padding: 0 1;
+    background: #2F596D;
+    color: #9DC3CF;
+}
+
+.btn-live-toggle:hover {
+    background: #5E99AE;
+    color: #141618;
+}
+
+.btn-live-toggle.btn-active {
+    background: #5E99AE;
+    color: #141618;
+    text-style: bold;
+}
+
 .pinout-box {
     border: round #2F596D;
     padding: 1;
