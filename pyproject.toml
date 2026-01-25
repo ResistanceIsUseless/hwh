@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "hwh"
-version = "0.1.0"
+version = "0.2.0"
 description = "Hardware Hacking Toolkit - Multi-device TUI for hardware security research"
 readme = "README.md"
 license = "MIT"
@@ -43,6 +43,7 @@ classifiers = [
 dependencies = [
     "textual>=0.47.0",
     "pyserial>=3.5",
+    "pyusb>=1.2.0",        # USB device detection (ST-Link, etc.)
     "rich>=13.0.0",
     "click>=8.0.0",
     "cobs>=1.2.0",         # COBS encoding for BPIO2 protocol
