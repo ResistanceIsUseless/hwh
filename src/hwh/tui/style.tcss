@@ -1713,7 +1713,7 @@ FilePickerScreen {
     padding: 0 1;
 }
 
-.voltage-select-small {
+.voltage-select-sm {
     width: 10;
 }
 
@@ -2227,7 +2227,7 @@ FilePickerScreen {
 }
 
 .power-control-row {
-    height: 3;
+    height: 5;
     align: left middle;
     padding: 0 1;
     margin-bottom: 1;
@@ -2238,6 +2238,12 @@ FilePickerScreen {
 .power-control-row .power-label {
     color: #9DC3CF;
     padding-right: 1;
+    width: 6;
+}
+
+.power-control-row .voltage-select-sm {
+    width: 12;
+    margin-right: 1;
 }
 
 .power-control-row .pullup-label {
