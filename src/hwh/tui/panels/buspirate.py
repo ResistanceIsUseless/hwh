@@ -1022,18 +1022,23 @@ Available commands:
         """Get value from a Select widget"""
         try:
             select = self.query_one(f"#{select_id}", Select)
-            return str(select.value) if select.value else default
+            # Check for Select.BLANK and None/falsy values
+            if select.value is None or select.value == Select.BLANK:
+                return default
+            return str(select.value)
         except Exception:
             return default
 
     async def _toggle_protocol_power(self, enabled: bool, voltage_mv: int = 3300) -> None:
         """Toggle power from protocol subtab switches"""
         if not self._backend:
-            self.log_output("[!] Not connected")
+            self.log_output("[!] Not connected - connect to device first")
             return
 
         try:
-            if self._backend.set_psu(enabled=enabled, voltage_mv=voltage_mv):
+            self.log_output(f"[*] Setting PSU: {'ON' if enabled else 'OFF'} at {voltage_mv}mV")
+            result = self._backend.set_psu(enabled=enabled, voltage_mv=voltage_mv)
+            if result:
                 self.power_enabled = enabled
                 if enabled:
                     self.log_output(f"[+] PSU enabled: {voltage_mv / 1000:.1f}V")
@@ -1132,15 +1137,17 @@ Available commands:
     async def _apply_vout_voltage(self) -> None:
         """Apply the voltage from the input field"""
         if not self._backend:
-            self.log_output("[!] Not connected")
+            self.log_output("[!] Not connected - connect to device first")
             return
 
         try:
             voltage = self._get_voltage_from_input()
             voltage_mv = int(voltage * 1000)
+            self.log_output(f"[*] Applying VOUT: {voltage:.2f}V ({voltage_mv}mV)")
 
             # Enable PSU with the specified voltage
-            if self._backend.set_psu(enabled=True, voltage_mv=voltage_mv):
+            result = self._backend.set_psu(enabled=True, voltage_mv=voltage_mv)
+            if result:
                 self.power_enabled = True
                 self.log_output(f"[+] VOUT set to {voltage:.2f}V")
                 # Update the switch to reflect enabled state
@@ -1149,28 +1156,34 @@ Available commands:
                     power_switch.value = True
                 except Exception:
                     pass
+                # Also sync protocol subtab power switches
+                self._sync_protocol_power_switches(True)
             else:
                 self.log_output(f"[!] Failed to set VOUT to {voltage:.2f}V")
         except Exception as e:
             self.log_output(f"[!] VOUT error: {e}")
 
     async def _toggle_power(self, enabled: bool) -> None:
-        """Toggle power supply"""
+        """Toggle power supply via Power tab switch"""
         if not self._backend:
-            self.log_output("[!] Not connected")
+            self.log_output("[!] Not connected - connect to device first")
             return
 
         try:
             # Get voltage from input field
             voltage = self._get_voltage_from_input()
             voltage_mv = int(voltage * 1000)
+            self.log_output(f"[*] Setting PSU: {'ON' if enabled else 'OFF'} at {voltage:.2f}V")
 
-            if self._backend.set_psu(enabled=enabled, voltage_mv=voltage_mv):
+            result = self._backend.set_psu(enabled=enabled, voltage_mv=voltage_mv)
+            if result:
                 self.power_enabled = enabled
                 if enabled:
                     self.log_output(f"[+] PSU enabled: {voltage:.2f}V")
                 else:
                     self.log_output("[-] PSU disabled")
+                # Sync protocol subtab power switches
+                self._sync_protocol_power_switches(enabled)
             else:
                 self.log_output(f"[!] Failed to {'enable' if enabled else 'disable'} PSU")
         except Exception as e:
