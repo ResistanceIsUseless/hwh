@@ -77,3 +77,4 @@ venv.bak/
 # Project specific
 todo.md
 *.log
+temp/

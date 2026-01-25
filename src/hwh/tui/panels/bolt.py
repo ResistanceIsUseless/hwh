@@ -24,11 +24,12 @@ from pathlib import Path
 
 from textual.app import ComposeResult
 from textual.containers import Container, Vertical, Horizontal, Grid
-from textual.widgets import Static, Button, Input, Switch, Log, DataTable, Select, ProgressBar
+from textual.widgets import Static, Button, Input, Switch, Log, DataTable, Select, ProgressBar, TabbedContent, TabPane
 from textual.messages import Message
 from textual.reactive import reactive
 
 from .base import DevicePanel, PanelCapability, CommandSuggestion
+from .logic_analyzer import LogicAnalyzerWidget, LogicCapture
 from ...detect import DeviceInfo
 from ...glitch_profiles import (
     GLITCH_PROFILES, GlitchProfile, find_profiles_for_chip,
@@ -182,6 +183,14 @@ class BoltPanel(DevicePanel):
 
         # Glitch profiles
         self.current_profile: Optional[GlitchProfile] = None
+
+        # Logic analyzer settings
+        self._logic_sample_rate: int = 1_000_000  # 1 MHz default
+        self._logic_sample_count: int = 8192
+        self._logic_trigger_channel: Optional[int] = None
+        self._logic_trigger_edge: str = "rising"
+        self._logic_capturing: bool = False
+        self._logic_sump_port: Optional[str] = None  # Separate SUMP port (if different from main)
 
     def compose(self) -> ComposeResult:
         with Vertical(id="bolt-panel"):
@@ -342,15 +351,21 @@ class BoltPanel(DevicePanel):
                             yield Static("log", classes="uart-opt-label")
                             yield Switch(id="logging-enable", animate=False)
 
-                # Main content area - output log
-                with Vertical(classes="bolt-content") as content:
-                    content.border_title = "output"
-                    yield Log(id="bolt-output", classes="bolt-log")
+                # Main content area - tabbed interface
+                with Vertical(classes="bolt-content"):
+                    with TabbedContent(id="bolt-content-tabs"):
+                        # Output tab
+                        with TabPane("Output", id="tab-output"):
+                            yield Log(id="bolt-output", classes="bolt-log")
+                            with Horizontal(classes="output-controls"):
+                                yield Button("clear", id="clear-output", classes="btn-output-ctrl")
+                                yield Button("export", id="export-log", classes="btn-output-ctrl")
 
-                    with Horizontal(classes="output-controls"):
-                        yield Button("clear", id="clear-output", classes="btn-output-ctrl")
-                        yield Button("export", id="export-log", classes="btn-output-ctrl")
+                        # Logic Analyzer tab
+                        with TabPane("Logic", id="tab-logic"):
+                            yield from self._build_logic_section()
 
+                    # Input row (shared across tabs)
                     with Horizontal(classes="input-row"):
                         yield Static("$>", classes="input-prompt")
                         yield Input(
@@ -359,22 +374,98 @@ class BoltPanel(DevicePanel):
                             classes="bolt-input-field"
                         )
 
+    def _build_logic_section(self) -> ComposeResult:
+        """Build the Logic Analyzer section UI"""
+        # Controls row
+        with Horizontal(classes="logic-controls"):
+            yield Static("Rate:", classes="logic-label")
+            yield Select(
+                [
+                    ("31.25 MHz", "31250000"),
+                    ("10 MHz", "10000000"),
+                    ("5 MHz", "5000000"),
+                    ("1 MHz", "1000000"),
+                    ("500 kHz", "500000"),
+                    ("100 kHz", "100000"),
+                ],
+                value="1000000",
+                id="logic-rate-select",
+                classes="logic-select"
+            )
+            yield Static("Samples:", classes="logic-label")
+            yield Select(
+                [
+                    ("1K", "1024"),
+                    ("4K", "4096"),
+                    ("8K", "8192"),
+                    ("16K", "16384"),
+                    ("32K", "32768"),
+                ],
+                value="8192",
+                id="logic-samples-select",
+                classes="logic-select"
+            )
+
+        # Trigger row
+        with Horizontal(classes="logic-trigger-row"):
+            yield Static("Trigger:", classes="logic-label")
+            yield Select(
+                [("None", "none")] + [(f"CH{i}", str(i)) for i in range(8)],
+                value="none",
+                id="logic-trigger-channel",
+                classes="logic-select"
+            )
+            yield Select(
+                [("Rising", "rising"), ("Falling", "falling")],
+                value="rising",
+                id="logic-trigger-edge",
+                classes="logic-select"
+            )
+
+        # SUMP port input (for separate LA interface)
+        with Horizontal(classes="logic-port-row"):
+            yield Static("SUMP Port:", classes="logic-label")
+            yield Input(
+                placeholder="/dev/cu.usbmodem (leave empty for auto)",
+                id="logic-sump-port",
+                classes="logic-port-input"
+            )
+
+        # Action buttons
+        with Horizontal(classes="logic-buttons"):
+            yield Button("Capture", id="btn-logic-capture", variant="primary")
+            yield Button("Stop", id="btn-logic-stop", variant="error")
+            yield Button("Demo", id="btn-logic-demo", variant="default")
+            yield Button("<<", id="btn-logic-left")
+            yield Button(">>", id="btn-logic-right")
+            yield Button("Trigger", id="btn-logic-goto-trigger")
+
+        # Waveform display - use more width for better visibility
+        yield LogicAnalyzerWidget(
+            channels=8,
+            visible_samples=120,
+            id="logic-waveform",
+            classes="logic-waveform"
+        )
+
+        # Status line
+        yield Static(
+            "Ready - configure settings and click Capture",
+            id="logic-status",
+            classes="logic-status"
+        )
+
     async def connect(self) -> bool:
         """Connect to the Bolt device using the scope library"""
         try:
-            # Try to import the native Bolt scope library
+            # Try to import the Bolt scope library
             try:
-                # First try local tooling path
-                import sys
-                tooling_path = Path(__file__).parent.parent.parent / "tooling" / "glitch-o-bolt"
-                if tooling_path.exists():
-                    sys.path.insert(0, str(tooling_path))
-
-                from scope import Scope
+                # First try bundled library in hwh.tooling.bolt
+                from ...tooling.bolt.scope import Scope
                 self._scope = Scope()
                 self.connected = True
                 self._log_output(f"[+] Connected to {self.device_info.name}")
-                self._log_output(f"[*] Scope library loaded successfully")
+                self._log_output(f"[*] Scope library loaded from hwh.tooling.bolt")
 
                 # Initialize with safe defaults
                 self._scope.glitch.repeat = self.glitch_config.length
@@ -997,6 +1088,26 @@ Mode: {'continuous' if self.glitch_running else 'manual'}
             await self._handle_dial_button(button_id)
             return
 
+        # Logic analyzer buttons
+        if button_id == "btn-logic-capture":
+            await self._start_logic_capture()
+            return
+        if button_id == "btn-logic-stop":
+            self._stop_logic_capture()
+            return
+        if button_id == "btn-logic-demo":
+            self._load_logic_demo()
+            return
+        if button_id == "btn-logic-left":
+            self._logic_scroll_left()
+            return
+        if button_id == "btn-logic-right":
+            self._logic_scroll_right()
+            return
+        if button_id == "btn-logic-goto-trigger":
+            self._logic_goto_trigger()
+            return
+
     async def _handle_dial_button(self, button_id: str) -> None:
         """Handle dial adjustment buttons"""
         # Parse button_id: "length-sub-100" or "repeat-add-10"
@@ -1234,3 +1345,309 @@ Mode: {'continuous' if self.glitch_running else 'manual'}
 
         except Exception as e:
             self._log_output(f"[!] Error: {e}")
+
+    # --------------------------------------------------------------------------
+    # Logic Analyzer Methods
+    # --------------------------------------------------------------------------
+
+    def _update_logic_status(self, message: str) -> None:
+        """Update the logic analyzer status line"""
+        try:
+            status = self.query_one("#logic-status", Static)
+            status.update(message)
+        except Exception:
+            pass
+
+    async def _start_logic_capture(self) -> None:
+        """Start a logic analyzer capture using SUMP protocol"""
+        if self._logic_capturing:
+            self._update_logic_status("Capture already in progress...")
+            return
+
+        # Get settings from UI
+        try:
+            rate_select = self.query_one("#logic-rate-select", Select)
+            samples_select = self.query_one("#logic-samples-select", Select)
+            trigger_ch_select = self.query_one("#logic-trigger-channel", Select)
+            trigger_edge_select = self.query_one("#logic-trigger-edge", Select)
+            sump_port_input = self.query_one("#logic-sump-port", Input)
+
+            self._logic_sample_rate = int(rate_select.value) if rate_select.value != Select.BLANK else 1_000_000
+            self._logic_sample_count = int(samples_select.value) if samples_select.value != Select.BLANK else 8192
+            self._logic_sump_port = sump_port_input.value.strip() or None
+
+            # Parse trigger settings
+            trigger_ch_val = trigger_ch_select.value
+            if trigger_ch_val and trigger_ch_val != "none" and trigger_ch_val != Select.BLANK:
+                self._logic_trigger_channel = int(trigger_ch_val)
+            else:
+                self._logic_trigger_channel = None
+
+            self._logic_trigger_edge = str(trigger_edge_select.value) if trigger_edge_select.value != Select.BLANK else "rising"
+
+        except Exception as e:
+            self._update_logic_status(f"Error reading settings: {e}")
+            return
+
+        self._logic_capturing = True
+        self._update_logic_status(f"Capturing at {self._logic_sample_rate/1e6:.2f} MHz...")
+        self._log_output(f"[LA] Starting capture: {self._logic_sample_rate/1e6:.2f}MHz, {self._logic_sample_count} samples")
+
+        # Run capture in background to avoid blocking UI
+        try:
+            capture_result = await asyncio.get_event_loop().run_in_executor(
+                None,
+                self._do_sump_capture
+            )
+
+            if capture_result:
+                # Log debug messages
+                for msg in capture_result.get("debug", []):
+                    self._log_output(f"[LA] {msg}")
+
+                # Check for error
+                if "error" in capture_result:
+                    self._update_logic_status(f"Capture failed: {capture_result['error']}")
+                    self._log_output(f"[LA] Error: {capture_result['error']}")
+                elif capture_result.get("samples"):
+                    # Convert to LogicCapture and display
+                    logic_capture = LogicCapture(
+                        channels=capture_result.get("channels", 8),
+                        sample_rate=capture_result.get("sample_rate", self._logic_sample_rate),
+                        samples=capture_result.get("samples", []),
+                        trigger_position=capture_result.get("trigger_position", 0)
+                    )
+
+                    # Update waveform display
+                    try:
+                        waveform = self.query_one("#logic-waveform", LogicAnalyzerWidget)
+                        waveform.set_capture(logic_capture)
+                    except Exception:
+                        pass
+
+                    sample_count = len(capture_result.get("samples", [[]])[0]) if capture_result.get("samples") else 0
+                    self._update_logic_status(f"Captured {sample_count} samples - use scroll buttons to navigate")
+                    self._log_output(f"[LA] Capture complete: {sample_count} samples")
+                else:
+                    self._update_logic_status("Capture returned no data")
+                    self._log_output("[LA] No data returned")
+            else:
+                self._update_logic_status("Capture failed - check SUMP port and connection")
+                self._log_output("[LA] Capture failed (no result)")
+
+        except Exception as e:
+            self._update_logic_status(f"Capture error: {e}")
+            self._log_output(f"[LA] Error: {e}")
+
+        finally:
+            self._logic_capturing = False
+
+    def _do_sump_capture(self) -> dict | None:
+        """
+        Perform SUMP capture (runs in executor thread).
+
+        Returns capture result dict or None on error.
+        """
+        # Store debug messages to return with result
+        debug_msgs = []
+
+        try:
+            from ...backends.sump import SUMPClient, SUMPConfig
+            import serial
+            from serial.tools.list_ports import comports
+
+            # Determine which port to use
+            # Priority: 1) User-specified port, 2) Auto-detect Bolt SUMP port, 3) device_info.port
+            port = self._logic_sump_port
+
+            if not port:
+                # Auto-detect Bolt SUMP port
+                # Bolt exposes TWO USB CDC interfaces:
+                #   - First port (lower number): SUMP logic analyzer
+                #   - Second port (higher number): API for glitching/ADC
+                # The Scope library uses the API port, so device_info.port is likely wrong for SUMP
+                debug_msgs.append("Auto-detecting Bolt SUMP port...")
+
+                ports = comports()
+                bolt_ports = []
+                for p in ports:
+                    # Match by product name or interface
+                    if p.product and "Curious Bolt" in p.product:
+                        bolt_ports.append(p.device)
+                    elif p.interface and "Curious Bolt" in p.interface:
+                        bolt_ports.append(p.device)
+
+                if bolt_ports:
+                    # Sort to get consistent order, SUMP is the FIRST (lower) port
+                    bolt_ports.sort()
+                    port = bolt_ports[0]  # First port = SUMP
+                    debug_msgs.append(f"Found Bolt ports: {bolt_ports}")
+                    debug_msgs.append(f"Using SUMP port: {port} (first of {len(bolt_ports)})")
+                else:
+                    # Fallback to device_info.port (may not work for SUMP)
+                    port = self.device_info.port
+                    debug_msgs.append(f"No Bolt ports auto-detected, using device port: {port}")
+
+            if not port:
+                return {"error": "No SUMP port configured", "debug": debug_msgs}
+
+            debug_msgs.append(f"Opening port: {port}")
+
+            # Open serial connection for SUMP
+            try:
+                ser = serial.Serial(port, baudrate=115200, timeout=2)
+            except Exception as e:
+                return {"error": f"Failed to open port {port}: {e}", "debug": debug_msgs}
+
+            try:
+                # Enable debug for troubleshooting
+                client = SUMPClient(ser, debug=True)
+
+                # Reset and identify
+                debug_msgs.append("Resetting SUMP device...")
+                client.reset()
+
+                debug_msgs.append("Identifying SUMP device...")
+                success, device_id = client.identify()
+
+                if not success:
+                    debug_msgs.append(f"SUMP not responding - got: '{device_id}'")
+                    # Try reading raw data to see what's there
+                    ser.reset_input_buffer()
+                    time.sleep(0.1)
+                    raw = ser.read(100)
+                    if raw:
+                        debug_msgs.append(f"Raw data on port: {raw.hex()}")
+                    return {"error": "SUMP device not responding", "debug": debug_msgs}
+
+                debug_msgs.append(f"SUMP identified: {device_id}")
+
+                # Configure capture
+                # Bolt base clock: 31.25 MHz
+                BOLT_BASE_CLOCK = 31_250_000
+
+                config = SUMPConfig(
+                    sample_rate=self._logic_sample_rate,
+                    sample_count=self._logic_sample_count,
+                    channels=8,
+                    base_clock=BOLT_BASE_CLOCK,
+                )
+
+                # Set trigger if configured
+                if self._logic_trigger_channel is not None:
+                    config.trigger_mask = 1 << self._logic_trigger_channel
+                    if self._logic_trigger_edge == "rising":
+                        config.trigger_value = 1 << self._logic_trigger_channel
+                    else:
+                        config.trigger_value = 0
+
+                debug_msgs.append(f"Configuring: rate={self._logic_sample_rate}, samples={self._logic_sample_count}")
+                client.configure(config)
+
+                # Capture
+                debug_msgs.append("Starting capture (waiting for data)...")
+                capture = client.capture(timeout=10.0)
+
+                if capture:
+                    debug_msgs.append(f"Capture complete: {len(capture.samples[0]) if capture.samples else 0} samples")
+                    return {
+                        "channels": capture.channels,
+                        "sample_rate": capture.sample_rate,
+                        "samples": capture.samples,
+                        "trigger_position": capture.trigger_position,
+                        "debug": debug_msgs,
+                    }
+
+                debug_msgs.append("Capture returned no data (timeout?)")
+                return {"error": "Capture timeout", "debug": debug_msgs}
+
+            finally:
+                ser.close()
+
+        except ImportError:
+            return {"error": "SUMP module not available", "debug": debug_msgs}
+        except Exception as e:
+            debug_msgs.append(f"Exception: {e}")
+            return {"error": str(e), "debug": debug_msgs}
+
+    def _stop_logic_capture(self) -> None:
+        """Stop any in-progress logic capture"""
+        # Note: SUMP captures are blocking, so we can't easily abort mid-capture
+        # This mainly updates state for UI feedback
+        self._logic_capturing = False
+        self._update_logic_status("Capture stopped")
+        self._log_output("[LA] Capture stopped")
+
+    def _load_logic_demo(self) -> None:
+        """Load demo data for testing the logic analyzer display"""
+        import random
+
+        # Generate demo waveforms with realistic patterns
+        samples = []
+
+        # CH0: Clock signal (regular square wave)
+        ch0 = []
+        for i in range(1000):
+            ch0.append(1 if (i // 10) % 2 == 0 else 0)
+        samples.append(ch0)
+
+        # CH1: Data signal (random with some structure)
+        ch1 = []
+        state = 0
+        for i in range(1000):
+            if i % 10 == 5:  # Change on "falling" clock edges
+                state = random.randint(0, 1)
+            ch1.append(state)
+        samples.append(ch1)
+
+        # CH2-7: Various random patterns
+        for ch in range(6):
+            channel_samples = []
+            state = random.randint(0, 1)
+            for i in range(1000):
+                if random.random() < 0.03 + (ch * 0.01):  # Different transition rates
+                    state = 1 - state
+                channel_samples.append(state)
+            samples.append(channel_samples)
+
+        # Create capture and display
+        capture = LogicCapture(
+            channels=8,
+            sample_rate=1_000_000,
+            samples=samples,
+            trigger_position=100
+        )
+
+        try:
+            waveform = self.query_one("#logic-waveform", LogicAnalyzerWidget)
+            waveform.set_capture(capture)
+        except Exception:
+            pass
+
+        self._update_logic_status("Demo data loaded - use scroll buttons to navigate")
+        self._log_output("[LA] Demo data loaded (1000 samples, 8 channels)")
+
+    def _logic_scroll_left(self) -> None:
+        """Scroll logic waveform left"""
+        try:
+            waveform = self.query_one("#logic-waveform", LogicAnalyzerWidget)
+            waveform.scroll_left(20)
+        except Exception:
+            pass
+
+    def _logic_scroll_right(self) -> None:
+        """Scroll logic waveform right"""
+        try:
+            waveform = self.query_one("#logic-waveform", LogicAnalyzerWidget)
+            waveform.scroll_right(20)
+        except Exception:
+            pass
+
+    def _logic_goto_trigger(self) -> None:
+        """Scroll to trigger position"""
+        try:
+            waveform = self.query_one("#logic-waveform", LogicAnalyzerWidget)
+            waveform.scroll_to_trigger()
+            self._update_logic_status("Scrolled to trigger position")
+        except Exception:
+            pass

@@ -21,21 +21,32 @@ from ..detect import DeviceInfo
 class BoltBackend(GlitchBackend):
     """
     Backend for Curious Bolt hardware hacking multi-tool.
-    
+
     Capabilities:
     - Crowbar voltage glitcher (8.3ns resolution)
-    - 8-channel logic analyzer (PulseView compatible)
+    - 8-channel logic analyzer (SUMP protocol, PulseView compatible)
     - Differential power analysis oscilloscope
-    
+
     The Bolt's native library uses:
         from scope import Scope
         s = Scope()
         s.glitch.repeat = 60  # Duration in 8.3ns cycles
         s.trigger()
+
+    Logic Analyzer:
+        The Bolt's logic analyzer uses SUMP protocol via a separate USB CDC interface.
+        RP2040 @ 125MHz with SAMPLING_DIVIDER=4 gives 31.25MHz max sample rate.
+        8 channels (GPIO 0-7), 100KB buffer.
     """
-    
+
     # Bolt timing constants
     CLOCK_PERIOD_NS = 8.3  # Single clock cycle duration
+
+    # SUMP/Logic Analyzer constants
+    # RP2040 system clock (125MHz) / SAMPLING_DIVIDER (4) = 31.25MHz base
+    SUMP_BASE_CLOCK = 31_250_000  # 31.25 MHz
+    SUMP_MAX_CHANNELS = 8
+    SUMP_BUFFER_SIZE = 102_400  # 100KB
     
     def __init__(self, device: DeviceInfo):
         super().__init__(device)
@@ -343,11 +354,12 @@ class BoltBackend(GlitchBackend):
 
             print(f"[Bolt] SUMP device identified: {device_id}")
 
-            # Configure capture
+            # Configure capture with Bolt's base clock
             config = SUMPConfig(
                 sample_rate=sample_rate,
                 sample_count=sample_count,
                 channels=channels,
+                base_clock=self.SUMP_BASE_CLOCK,  # 31.25 MHz for Bolt
             )
 
             # Set trigger if specified

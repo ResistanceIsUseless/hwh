@@ -161,14 +161,20 @@ class SUMPClient:
         self._serial.reset_input_buffer()
         self._send_command(SUMPCommand.ID)
 
-        response = self._read_response(4, timeout=0.5)
+        response = self._read_response(4, timeout=1.0)
+
+        self._log(f"ID response: {response.hex() if response else '(empty)'} = {response!r}")
 
         if response == self.SUMP_ID:
             return True, response.decode('ascii')
         elif len(response) >= 4:
+            # Some devices might return extra data
             return True, response[:4].decode('ascii', errors='ignore')
+        elif len(response) > 0:
+            # Partial response - device might be in wrong state
+            return False, f"partial:{response.hex()}"
         else:
-            return False, ""
+            return False, "no_response"
 
     def get_metadata(self) -> dict:
         """
