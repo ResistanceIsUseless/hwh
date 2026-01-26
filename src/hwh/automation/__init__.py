@@ -50,6 +50,25 @@ Example - Firmware Analysis:
     >>> report = await analyze_firmware("router_firmware.bin")
     >>> print(report.summary())
     >>> report.save("analysis.json")
+
+Example - Glitch Calibration:
+    >>> from hwh.automation import GlitchCalibrator, calibrate_setup
+    >>> # Measure latency with loopback (glitch output -> LA input)
+    >>> profile = await calibrate_setup(
+    ...     glitch_backend=bolt,
+    ...     la_backend=bolt,
+    ...     profile_name="my_bolt_10cm_wire",
+    ...     channel=0,  # LA channel connected to glitch output
+    ...     iterations=100
+    ... )
+    >>> print(f"Latency: {profile.trigger_latency_ns:.0f}ns")
+    >>> print(f"Jitter: {profile.trigger_jitter}")
+    >>>
+    >>> # Load and apply to shared config
+    >>> from hwh.automation import PortableGlitchConfig, CalibrationManager
+    >>> config = PortableGlitchConfig.load("stm32_rdp_bypass.json")
+    >>> manager = CalibrationManager()
+    >>> width, offset = manager.apply_calibration(config, "my_bolt_10cm_wire")
 """
 
 from .uart_scanner import (
@@ -98,6 +117,16 @@ from .firmware_analysis import (
     analyze_firmware,
 )
 
+from .calibration import (
+    GlitchCalibrator,
+    CalibrationProfile,
+    CalibrationManager,
+    PortableGlitchConfig,
+    LatencyMeasurement,
+    JitterStats,
+    calibrate_setup,
+)
+
 __all__ = [
     # UART Scanner
     "UARTScanner",
@@ -139,4 +168,13 @@ __all__ = [
     "Finding",
     "FindingType",
     "analyze_firmware",
+
+    # Calibration
+    "GlitchCalibrator",
+    "CalibrationProfile",
+    "CalibrationManager",
+    "PortableGlitchConfig",
+    "LatencyMeasurement",
+    "JitterStats",
+    "calibrate_setup",
 ]
