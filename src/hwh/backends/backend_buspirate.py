@@ -1653,6 +1653,311 @@ class BusPirateBackend(BusBackend):
             print(f"[BusPirate] Serial pullup command failed: {e}")
             return False
 
+    # --------------------------------------------------------------------------
+    # ADC / Analog Measurement
+    # --------------------------------------------------------------------------
+
+    def adc_read(self) -> dict[str, int]:
+        """
+        Read all ADC channels.
+
+        Returns:
+            Dictionary mapping pin label to voltage in millivolts.
+            Example: {'IO0': 3280, 'IO1': 0, 'IO2': 1650, ...}
+        """
+        if not self._connected:
+            return {}
+
+        # BPIO2 provides ADC values in status response
+        if self._client:
+            status = self._client.status_request()
+            if status and 'adc_mv' in status:
+                adc_values = status['adc_mv']
+                pin_labels = status.get('mode_pin_labels', [])
+
+                result = {}
+                for i, mv in enumerate(adc_values):
+                    if i < len(pin_labels):
+                        result[pin_labels[i]] = mv
+                    else:
+                        result[f'IO{i}'] = mv
+
+                return result
+
+        # Serial fallback - use 'v' command to read voltages
+        if self._serial_fallback:
+            return self._read_adc_serial()
+
+        return {}
+
+    def adc_read_channel(self, channel: int) -> int:
+        """
+        Read a specific ADC channel.
+
+        Args:
+            channel: Channel number (0-7 for IO0-IO7)
+
+        Returns:
+            Voltage in millivolts, or -1 if error
+        """
+        if not self._connected:
+            return -1
+
+        if self._client:
+            status = self._client.status_request()
+            if status and 'adc_mv' in status:
+                adc_values = status['adc_mv']
+                if 0 <= channel < len(adc_values):
+                    return adc_values[channel]
+
+        # Serial fallback
+        if self._serial_fallback:
+            all_values = self._read_adc_serial()
+            key = f'IO{channel}'
+            return all_values.get(key, -1)
+
+        return -1
+
+    def _read_adc_serial(self) -> dict[str, int]:
+        """Read ADC values via serial terminal command."""
+        if not self._serial_fallback:
+            return {}
+
+        try:
+            # Bus Pirate 5/6 'v' command shows voltage readings
+            success, response = self._send_serial_command("v")
+            if not success:
+                return {}
+
+            result = {}
+            import re
+
+            # Parse voltage output like "IO0: 3.28V" or "ADC: 3280mV"
+            # Different firmware versions may have different formats
+            for line in response.split('\n'):
+                # Look for "IO0: X.XXV" format
+                match = re.search(r'IO(\d+)\s*:\s*([\d.]+)\s*V', line, re.IGNORECASE)
+                if match:
+                    channel = int(match.group(1))
+                    voltage_v = float(match.group(2))
+                    result[f'IO{channel}'] = int(voltage_v * 1000)
+                    continue
+
+                # Look for "ADC X: XXXXmV" format
+                match = re.search(r'ADC\s*(\d+)\s*:\s*(\d+)\s*mV', line, re.IGNORECASE)
+                if match:
+                    channel = int(match.group(1))
+                    result[f'IO{channel}'] = int(match.group(2))
+
+            return result
+
+        except Exception as e:
+            print(f"[BusPirate] ADC read error: {e}")
+            return {}
+
+    def adc_monitor(self, channel: int, interval_ms: int = 100,
+                    duration_s: float = 5.0,
+                    callback=None) -> list[tuple[float, int]]:
+        """
+        Monitor ADC channel over time.
+
+        Args:
+            channel: Channel to monitor (0-7)
+            interval_ms: Sampling interval in milliseconds
+            duration_s: Total monitoring duration in seconds
+            callback: Optional callback(timestamp, value) for each reading
+
+        Returns:
+            List of (timestamp, millivolts) tuples
+        """
+        import time
+
+        if not self._connected:
+            return []
+
+        readings = []
+        start_time = time.time()
+        interval_s = interval_ms / 1000.0
+
+        while time.time() - start_time < duration_s:
+            timestamp = time.time() - start_time
+            value = self.adc_read_channel(channel)
+
+            if value >= 0:
+                readings.append((timestamp, value))
+                if callback:
+                    callback(timestamp, value)
+
+            time.sleep(interval_s)
+
+        return readings
+
+    # --------------------------------------------------------------------------
+    # PWM Control
+    # --------------------------------------------------------------------------
+
+    def pwm_start(self, frequency_hz: int, duty_cycle: float = 50.0,
+                  channel: int = 0) -> bool:
+        """
+        Start PWM output on a GPIO pin.
+
+        Note: BPIO2 may not have direct PWM support. Uses terminal fallback.
+
+        Args:
+            frequency_hz: PWM frequency in Hz
+            duty_cycle: Duty cycle as percentage (0.0-100.0)
+            channel: Output channel/pin (typically IO0 or AUX)
+
+        Returns:
+            True if PWM started successfully
+        """
+        if not self._connected:
+            return False
+
+        # PWM is typically available via terminal commands, not BPIO2
+        if self._serial_fallback:
+            return self._start_pwm_serial(frequency_hz, duty_cycle)
+
+        # Try to open serial fallback for PWM
+        if self._client and self.device.port:
+            console_port = self.device.port
+            if 'buspirate3' in console_port:
+                console_port = console_port.replace('buspirate3', 'buspirate1')
+
+            if self._open_serial_fallback_to_port(console_port):
+                return self._start_pwm_serial(frequency_hz, duty_cycle)
+
+        print("[BusPirate] PWM requires terminal access")
+        return False
+
+    def _start_pwm_serial(self, frequency_hz: int, duty_cycle: float) -> bool:
+        """Start PWM via serial terminal commands."""
+        if not self._serial_fallback:
+            return False
+
+        try:
+            # Bus Pirate 5/6 PWM command: 'g' for frequency generator
+            # Format: g <frequency_hz> [duty_cycle_%]
+            if duty_cycle != 50.0:
+                cmd = f"g {frequency_hz} {duty_cycle:.1f}"
+            else:
+                cmd = f"g {frequency_hz}"
+
+            success, response = self._send_serial_command(cmd)
+
+            if success:
+                response_lower = response.lower()
+                if "error" in response_lower or "invalid" in response_lower:
+                    print(f"[BusPirate] PWM error: {response[:100]}")
+                    return False
+
+                print(f"[BusPirate] PWM started: {frequency_hz}Hz, {duty_cycle:.1f}% duty")
+                return True
+
+            return False
+
+        except Exception as e:
+            print(f"[BusPirate] PWM start error: {e}")
+            return False
+
+    def pwm_stop(self) -> bool:
+        """Stop PWM output."""
+        if not self._connected:
+            return False
+
+        if self._serial_fallback:
+            try:
+                # Stop PWM with 'g 0' or 'g' with no arguments
+                success, response = self._send_serial_command("g")
+                if success:
+                    print("[BusPirate] PWM stopped")
+                    return True
+            except Exception as e:
+                print(f"[BusPirate] PWM stop error: {e}")
+
+        return False
+
+    # --------------------------------------------------------------------------
+    # Frequency Measurement
+    # --------------------------------------------------------------------------
+
+    def frequency_measure(self, channel: int = 0, timeout_ms: int = 2000) -> int | None:
+        """
+        Measure frequency on an input pin.
+
+        Args:
+            channel: Input channel (typically IO0 or AUX)
+            timeout_ms: Measurement timeout in milliseconds
+
+        Returns:
+            Measured frequency in Hz, or None if no signal detected
+        """
+        if not self._connected:
+            return None
+
+        # Frequency measurement via terminal commands
+        if self._serial_fallback:
+            return self._measure_frequency_serial(timeout_ms)
+
+        # Try to open serial fallback
+        if self._client and self.device.port:
+            console_port = self.device.port
+            if 'buspirate3' in console_port:
+                console_port = console_port.replace('buspirate3', 'buspirate1')
+
+            if self._open_serial_fallback_to_port(console_port):
+                return self._measure_frequency_serial(timeout_ms)
+
+        print("[BusPirate] Frequency measurement requires terminal access")
+        return None
+
+    def _measure_frequency_serial(self, timeout_ms: int = 2000) -> int | None:
+        """Measure frequency via serial terminal command."""
+        if not self._serial_fallback:
+            return None
+
+        try:
+            import re
+
+            # Bus Pirate 5/6 frequency counter: 'f' command
+            success, response = self._send_serial_command("f", timeout=timeout_ms / 1000.0 + 1)
+
+            if success:
+                # Parse frequency from response
+                # Expected format: "Frequency: 1000 Hz" or "1000Hz" or similar
+                match = re.search(r'(\d+(?:\.\d+)?)\s*(?:Hz|hz|HZ)', response)
+                if match:
+                    freq = float(match.group(1))
+                    print(f"[BusPirate] Measured frequency: {freq:.0f} Hz")
+                    return int(freq)
+
+                # Check for kHz
+                match = re.search(r'(\d+(?:\.\d+)?)\s*(?:kHz|khz|KHZ)', response)
+                if match:
+                    freq = float(match.group(1)) * 1000
+                    print(f"[BusPirate] Measured frequency: {freq:.0f} Hz")
+                    return int(freq)
+
+                # Check for MHz
+                match = re.search(r'(\d+(?:\.\d+)?)\s*(?:MHz|mhz|MHZ)', response)
+                if match:
+                    freq = float(match.group(1)) * 1_000_000
+                    print(f"[BusPirate] Measured frequency: {freq:.0f} Hz")
+                    return int(freq)
+
+                # No signal or error
+                if "no signal" in response.lower() or "timeout" in response.lower():
+                    print("[BusPirate] No frequency signal detected")
+                    return None
+
+                print(f"[BusPirate] Could not parse frequency from: {response[:100]}")
+
+            return None
+
+        except Exception as e:
+            print(f"[BusPirate] Frequency measure error: {e}")
+            return None
+
     def _send_serial_mode_command(self, mode: str, config=None) -> bool:
         """
         Send mode change command via serial terminal interface.
