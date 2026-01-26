@@ -549,6 +549,173 @@ class BusPirateBackend(BusBackend):
         ])
         return self.spi_transfer(cmd, read_len=length)
 
+    def _spi_write_enable(self) -> bool:
+        """Send Write Enable command (0x06) and verify WEL bit is set."""
+        if not self._connected or not self._spi:
+            return False
+
+        # Send Write Enable command
+        self.spi_transfer(b'\x06', read_len=0)
+
+        # Verify Write Enable Latch (WEL) bit is set in status register
+        status = self.spi_transfer(b'\x05', read_len=1)
+        if status and len(status) > 0:
+            return (status[0] & 0x02) != 0  # WEL is bit 1
+        return False
+
+    def _spi_wait_ready(self, timeout_ms: int = 10000) -> bool:
+        """Wait for Write In Progress (WIP) bit to clear."""
+        import time
+
+        if not self._connected or not self._spi:
+            return False
+
+        start_time = time.time()
+        timeout_sec = timeout_ms / 1000.0
+
+        while time.time() - start_time < timeout_sec:
+            status = self.spi_transfer(b'\x05', read_len=1)
+            if status and len(status) > 0:
+                if (status[0] & 0x01) == 0:  # WIP is bit 0
+                    return True
+            time.sleep(0.001)  # 1ms polling interval
+
+        print("[BusPirate] SPI flash timeout waiting for ready")
+        return False
+
+    def spi_flash_write(self, address: int, data: bytes,
+                        page_size: int = 256,
+                        progress_callback=None) -> bool:
+        """
+        Write data to SPI flash memory using Page Program (0x02).
+
+        Args:
+            address: Starting address (must be page-aligned for best performance)
+            data: Data to write
+            page_size: Flash page size (default 256 bytes for most chips)
+            progress_callback: Optional callback(bytes_written, total_bytes) -> bool
+                             Return False to cancel operation
+
+        Returns:
+            True if write completed successfully
+        """
+        if not self._connected or not self._spi:
+            return False
+
+        total_bytes = len(data)
+        bytes_written = 0
+        current_addr = address
+
+        print(f"[BusPirate] Writing {total_bytes} bytes to flash at 0x{address:06X}")
+
+        while bytes_written < total_bytes:
+            # Calculate bytes to write in this page
+            page_offset = current_addr % page_size
+            bytes_in_page = min(page_size - page_offset, total_bytes - bytes_written)
+
+            # Enable write
+            if not self._spi_write_enable():
+                print(f"[BusPirate] Write enable failed at 0x{current_addr:06X}")
+                return False
+
+            # Build Page Program command: 0x02 + 24-bit address + data
+            chunk = data[bytes_written:bytes_written + bytes_in_page]
+            cmd = bytes([
+                0x02,
+                (current_addr >> 16) & 0xFF,
+                (current_addr >> 8) & 0xFF,
+                current_addr & 0xFF
+            ]) + chunk
+
+            self.spi_transfer(cmd, read_len=0)
+
+            # Wait for write to complete
+            if not self._spi_wait_ready(timeout_ms=5000):
+                print(f"[BusPirate] Write timeout at 0x{current_addr:06X}")
+                return False
+
+            bytes_written += bytes_in_page
+            current_addr += bytes_in_page
+
+            # Progress callback
+            if progress_callback:
+                if not progress_callback(bytes_written, total_bytes):
+                    print("[BusPirate] Write cancelled by user")
+                    return False
+
+        print(f"[BusPirate] Write complete: {bytes_written} bytes")
+        return True
+
+    def spi_flash_erase(self, address: int = 0,
+                        erase_type: str = "sector",
+                        progress_callback=None) -> bool:
+        """
+        Erase SPI flash memory.
+
+        Args:
+            address: Address within the region to erase (for sector/block erase)
+            erase_type: Type of erase operation:
+                - "sector": 4KB sector erase (0x20)
+                - "block32": 32KB block erase (0x52)
+                - "block64": 64KB block erase (0xD8)
+                - "chip": Full chip erase (0xC7)
+            progress_callback: Optional callback(message) for status updates
+
+        Returns:
+            True if erase completed successfully
+        """
+        if not self._connected or not self._spi:
+            return False
+
+        # Erase command mapping
+        erase_commands = {
+            "sector": (0x20, "4KB sector", 1000),     # 4KB, ~1s timeout
+            "block32": (0x52, "32KB block", 2000),    # 32KB, ~2s timeout
+            "block64": (0xD8, "64KB block", 3000),    # 64KB, ~3s timeout
+            "chip": (0xC7, "chip", 60000),            # Full chip, ~60s timeout
+        }
+
+        if erase_type not in erase_commands:
+            print(f"[BusPirate] Unknown erase type: {erase_type}")
+            return False
+
+        cmd_byte, desc, timeout_ms = erase_commands[erase_type]
+
+        if progress_callback:
+            progress_callback(f"Erasing {desc} at 0x{address:06X}...")
+
+        print(f"[BusPirate] Erasing {desc} at 0x{address:06X}")
+
+        # Enable write
+        if not self._spi_write_enable():
+            print("[BusPirate] Write enable failed for erase")
+            return False
+
+        # Send erase command
+        if erase_type == "chip":
+            # Chip erase has no address
+            self.spi_transfer(bytes([cmd_byte]), read_len=0)
+        else:
+            # Sector/block erase includes 24-bit address
+            cmd = bytes([
+                cmd_byte,
+                (address >> 16) & 0xFF,
+                (address >> 8) & 0xFF,
+                address & 0xFF
+            ])
+            self.spi_transfer(cmd, read_len=0)
+
+        # Wait for erase to complete
+        if not self._spi_wait_ready(timeout_ms=timeout_ms):
+            print(f"[BusPirate] Erase timeout")
+            return False
+
+        if progress_callback:
+            progress_callback(f"Erase complete")
+
+        print(f"[BusPirate] Erase complete")
+        return True
+
     # --------------------------------------------------------------------------
     # I2C Interface
     # --------------------------------------------------------------------------
