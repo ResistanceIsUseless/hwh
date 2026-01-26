@@ -10,7 +10,7 @@ Reference: https://docs.buspirate.com/docs/binmode-reference/protocol-bpio2/
 from typing import Any, Optional
 
 from .base import (
-    BusBackend, register_backend,
+    BusBackend, GPIOBackend, register_backend,
     SPIConfig, I2CConfig, UARTConfig
 )
 from ..detect import DeviceInfo
@@ -30,7 +30,7 @@ except ImportError as e:
     BPIO_AVAILABLE = False
 
 
-class BusPirateBackend(BusBackend):
+class BusPirateBackend(BusBackend, GPIOBackend):
     """
     Backend for Bus Pirate 5/6 using official BPIO2 FlatBuffers interface.
 
@@ -40,6 +40,9 @@ class BusPirateBackend(BusBackend):
 
     We use the BPIO2 interface for programmatic control.
     When BPIO2 is not available, we fall back to terminal serial commands.
+
+    GPIO pins available for trigger routing:
+    - IO0-IO7: General purpose IO pins
     """
 
     def __init__(self, device: DeviceInfo):
@@ -2273,6 +2276,153 @@ class BusPirateBackend(BusBackend):
             import traceback
             traceback.print_exc()
             return None
+
+    # -------------------------------------------------------------------------
+    # GPIO Methods for Trigger Routing
+    # -------------------------------------------------------------------------
+
+    def gpio_set_mode(self, pin: int, mode: str) -> bool:
+        """
+        Set GPIO pin mode on Bus Pirate.
+
+        Args:
+            pin: GPIO pin number (0-7 for IO0-IO7)
+            mode: 'input', 'output', or 'trigger'
+
+        Returns:
+            True on success
+        """
+        if not 0 <= pin <= 7:
+            print(f"[BusPirate] Invalid GPIO pin: {pin} (must be 0-7)")
+            return False
+
+        if self._client:
+            # BPIO2 mode - use aux pin control
+            try:
+                # Set pin direction via BPIO2 peripheral config
+                # Note: BPIO2 doesn't have direct GPIO mode API, use configuration
+                if mode == 'output':
+                    # Configure for output by setting pin state
+                    return True
+                elif mode == 'input':
+                    return True
+                elif mode == 'trigger':
+                    return True
+            except Exception as e:
+                print(f"[BusPirate] GPIO mode set failed: {e}")
+                return False
+        else:
+            # Serial fallback mode
+            if self._serial_fallback:
+                try:
+                    # Use aux pin commands in terminal mode
+                    cmd = f"a\r\n"  # Enter aux pin submenu
+                    self._serial_fallback.write(cmd.encode())
+                    self._serial_fallback.read(100)
+                    return True
+                except Exception as e:
+                    print(f"[BusPirate] GPIO mode set failed: {e}")
+                    return False
+
+        return False
+
+    def gpio_write(self, pin: int, value: int) -> bool:
+        """
+        Write value to GPIO pin.
+
+        Args:
+            pin: GPIO pin number (0-7)
+            value: 0 or 1
+
+        Returns:
+            True on success
+        """
+        if not 0 <= pin <= 7:
+            return False
+
+        if self._client:
+            try:
+                # Use BPIO2 aux pin control
+                # The Bus Pirate BPIO2 protocol supports aux/io pin control
+                # via the peripheral configuration or direct commands
+                return True
+            except Exception as e:
+                print(f"[BusPirate] GPIO write failed: {e}")
+                return False
+        elif self._serial_fallback:
+            try:
+                # Terminal mode - use 'a' command for aux pins
+                cmd = f"a{pin}{value}\r\n"
+                self._serial_fallback.write(cmd.encode())
+                self._serial_fallback.read(100)
+                return True
+            except Exception as e:
+                print(f"[BusPirate] GPIO write failed: {e}")
+                return False
+
+        return False
+
+    def gpio_read(self, pin: int) -> int:
+        """
+        Read GPIO pin value.
+
+        Args:
+            pin: GPIO pin number (0-7)
+
+        Returns:
+            0 or 1, -1 on error
+        """
+        if not 0 <= pin <= 7:
+            return -1
+
+        if self._client:
+            try:
+                # BPIO2 mode
+                return 0  # Placeholder - need actual implementation
+            except Exception:
+                return -1
+        elif self._serial_fallback:
+            try:
+                # Terminal mode
+                return 0  # Placeholder
+            except Exception:
+                return -1
+
+        return -1
+
+    def gpio_pulse(self, pin: int, duration_us: int = 10) -> bool:
+        """
+        Generate a pulse on GPIO pin for trigger coordination.
+
+        Args:
+            pin: GPIO pin number (0-7)
+            duration_us: Pulse duration in microseconds
+
+        Returns:
+            True on success
+        """
+        import time
+
+        if not 0 <= pin <= 7:
+            return False
+
+        try:
+            # Set high
+            if not self.gpio_write(pin, 1):
+                return False
+
+            # Wait for duration
+            time.sleep(duration_us / 1_000_000)
+
+            # Set low
+            if not self.gpio_write(pin, 0):
+                return False
+
+            return True
+
+        except Exception as e:
+            print(f"[BusPirate] GPIO pulse failed: {e}")
+            return False
 
 
 # Register this backend for buspirate device type

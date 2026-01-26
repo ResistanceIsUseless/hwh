@@ -256,9 +256,72 @@ class DebugBackend(Backend):
         pass
 
 
+class GPIOBackend(Backend):
+    """Backend supporting GPIO operations for trigger routing."""
+
+    @abstractmethod
+    def gpio_set_mode(self, pin: int, mode: str) -> bool:
+        """
+        Set GPIO pin mode.
+
+        Args:
+            pin: GPIO pin number
+            mode: 'input', 'output', or 'trigger'
+
+        Returns:
+            True on success
+        """
+        pass
+
+    @abstractmethod
+    def gpio_write(self, pin: int, value: int) -> bool:
+        """
+        Write value to GPIO pin.
+
+        Args:
+            pin: GPIO pin number
+            value: 0 or 1
+
+        Returns:
+            True on success
+        """
+        pass
+
+    @abstractmethod
+    def gpio_read(self, pin: int) -> int:
+        """
+        Read GPIO pin value.
+
+        Args:
+            pin: GPIO pin number
+
+        Returns:
+            0 or 1, -1 on error
+        """
+        pass
+
+    @abstractmethod
+    def gpio_pulse(self, pin: int, duration_us: int = 10) -> bool:
+        """
+        Generate a pulse on GPIO pin.
+
+        Args:
+            pin: GPIO pin number
+            duration_us: Pulse duration in microseconds
+
+        Returns:
+            True on success
+        """
+        pass
+
+    def gpio_set_trigger_output(self, pin: int) -> bool:
+        """Configure a pin as trigger output for coordination."""
+        return self.gpio_set_mode(pin, 'output')
+
+
 class GlitchBackend(Backend):
     """Backend supporting fault injection."""
-    
+
     @abstractmethod
     def configure_glitch(self, config: GlitchConfig) -> bool:
         """Configure glitch parameters."""

@@ -22,6 +22,9 @@ from textual.binding import Binding
 from ..detect import detect, DeviceInfo
 from .. import __version__
 
+# Lazy import coordination to avoid circular imports
+# These will be imported in methods that use them
+
 # Import all panel types
 from .panels.base import DevicePanel, GenericPanel, PanelCapability
 from .panels.buspirate import BusPiratePanel
@@ -375,6 +378,55 @@ class HwhApp(App):
         await button_row.mount(Button("ARM", id="coord-glitch-arm", classes="btn-coord btn-arm"))
         await button_row.mount(Button("TRIGGER", id="coord-glitch-trigger", classes="btn-coord btn-trigger"))
         await button_row.mount(Button("DISARM", id="coord-glitch-disarm", classes="btn-coord btn-disarm"))
+
+        # === MIDDLE SECTION: Trigger Routes ===
+        trigger_section = Vertical(id="coord-trigger-section", classes="coord-panel")
+        await coord_content.mount(trigger_section)
+
+        trigger_header = Horizontal(classes="coord-panel-header")
+        await trigger_section.mount(trigger_header)
+        await trigger_header.mount(Static("Trigger Routing", classes="coord-panel-title"))
+
+        # Coordinator status
+        coord_status = Static("READY", id="coord-status", classes="coord-status-badge")
+        await trigger_header.mount(coord_status)
+
+        # Route configuration row
+        route_config = Horizontal(classes="coord-route-config")
+        await trigger_section.mount(route_config)
+
+        # Pattern input
+        await route_config.mount(Static("Pattern:", classes="coord-label"))
+        await route_config.mount(Input(placeholder="Password:|Login:", id="coord-trigger-pattern", classes="coord-input-wide"))
+
+        # Route mode
+        await route_config.mount(Static("Mode:", classes="coord-label"))
+        route_mode = Select([("Software", "software"), ("Hardware GPIO", "hardware")],
+                           value="software", id="coord-route-mode", classes="coord-select")
+        await route_config.mount(route_mode)
+
+        # Add route button
+        await route_config.mount(Button("Add Route", id="coord-add-route", classes="btn-coord"))
+
+        # Active routes display
+        routes_row = Horizontal(classes="coord-routes-row")
+        await trigger_section.mount(routes_row)
+
+        await routes_row.mount(Static("Active Routes:", classes="coord-label"))
+        routes_list = Static("None", id="coord-routes-list", classes="coord-routes-list")
+        await routes_row.mount(routes_list)
+
+        # Arm/Disarm coordinator
+        coord_buttons = Horizontal(classes="coord-buttons")
+        await trigger_section.mount(coord_buttons)
+        await coord_buttons.mount(Button("ARM COORDINATOR", id="coord-arm", classes="btn-coord btn-arm"))
+        await coord_buttons.mount(Button("DISARM", id="coord-disarm", classes="btn-coord btn-disarm"))
+        await coord_buttons.mount(Button("Clear Routes", id="coord-clear-routes", classes="btn-coord"))
+
+        # Trigger event log
+        trigger_log = Log(id="coord-trigger-log", classes="coord-log-small")
+        trigger_log.border_title = "Trigger Events"
+        await trigger_section.mount(trigger_log)
 
         # === BOTTOM SECTION: Logic Analyzer ===
         la_section = Vertical(id="coord-la-section", classes="coord-panel coord-la")
@@ -779,6 +831,16 @@ class HwhApp(App):
         elif button_id == "coord-glitch-disarm":
             await self._coord_glitch_disarm()
 
+        # Coordination tab - Trigger Routes
+        elif button_id == "coord-add-route":
+            await self._coord_add_route()
+        elif button_id == "coord-arm":
+            await self._coord_arm_coordinator()
+        elif button_id == "coord-disarm":
+            await self._coord_disarm_coordinator()
+        elif button_id == "coord-clear-routes":
+            await self._coord_clear_routes()
+
         # Coordination tab - Logic Analyzer
         elif button_id == "coord-la-capture":
             await self._coord_la_capture()
@@ -958,6 +1020,192 @@ class HwhApp(App):
 
         except Exception as e:
             self.notify(f"Navigation failed: {e}", severity="error")
+
+    # -------------------------------------------------------------------------
+    # Coordinator Integration
+    # -------------------------------------------------------------------------
+
+    async def _coord_add_route(self) -> None:
+        """Add a trigger route from UART to glitcher"""
+        from textual.widgets import Input, Log
+        from ..coordination import RoutingMode
+        try:
+            # Get pattern
+            pattern_input = self.query_one("#coord-trigger-pattern", Input)
+            pattern = pattern_input.value.strip()
+            if not pattern:
+                self.notify("Enter a pattern (regex)", severity="warning")
+                return
+
+            # Get source device (UART monitor)
+            uart_select = self.query_one("#coord-uart-device", Select)
+            uart_device = uart_select.value
+            if uart_device == "none":
+                self.notify("Select a UART device", severity="warning")
+                return
+
+            # Get target device (glitcher)
+            glitch_select = self.query_one("#coord-glitch-device", Select)
+            glitch_device = glitch_select.value
+            if glitch_device == "none":
+                self.notify("Select a glitch device", severity="warning")
+                return
+
+            # Get glitch parameters
+            width = int(self.query_one("#coord-glitch-width", Input).value or "50")
+            delay = int(self.query_one("#coord-glitch-delay", Input).value or "100")
+
+            # Get routing mode
+            mode_select = self.query_one("#coord-route-mode", Select)
+            mode_str = mode_select.value
+            mode = RoutingMode.HARDWARE if mode_str == "hardware" else RoutingMode.SOFTWARE
+
+            # Create route name
+            route_name = f"uart_glitch_{len(self._coordinator.routes) + 1}"
+
+            # Add route via coordinator
+            self._coordinator.add_uart_glitch_route(
+                name=route_name,
+                uart_device=uart_device,
+                glitch_device=glitch_device,
+                pattern=pattern,
+                width_ns=width * 8,  # Convert cycles to ns (8.3ns/cycle)
+                offset_ns=delay * 8
+            )
+
+            # Update routes display
+            self._update_routes_display()
+
+            # Log
+            trigger_log = self.query_one("#coord-trigger-log", Log)
+            trigger_log.write(f"[+] Added route: {route_name}\n")
+            trigger_log.write(f"    Pattern: {pattern}\n")
+            trigger_log.write(f"    {uart_device} → {glitch_device}\n")
+
+            # Clear pattern input
+            pattern_input.value = ""
+
+            self.notify(f"Route added: {route_name}")
+
+        except Exception as e:
+            self.notify(f"Failed to add route: {e}", severity="error")
+
+    async def _coord_arm_coordinator(self) -> None:
+        """Arm the coordinator to start monitoring"""
+        from textual.widgets import Log
+        from .device_pool import DeviceState
+        try:
+            # Initialize device pool with connected panels
+            for device_id, panel in self.connected_panels.items():
+                if device_id not in self._coordinator.pool.devices:
+                    device_info = self.available_devices.get(device_id)
+                    if device_info:
+                        state = DeviceState(
+                            device_info=device_info,
+                            backend=getattr(panel, 'backend', None),
+                            connected=True
+                        )
+                        self._coordinator.pool.devices[device_id] = state
+
+            # Set up callbacks
+            def on_trigger(event):
+                try:
+                    trigger_log = self.query_one("#coord-trigger-log", Log)
+                    status = "✓" if event.success else "✗"
+                    trigger_log.write(f"[{status}] {event.route_name}: {event.details}\n")
+                except Exception:
+                    pass
+
+            def on_status(status):
+                try:
+                    status_widget = self.query_one("#coord-status", Static)
+                    status_widget.update(status)
+                    if status == "ARMED":
+                        status_widget.styles.color = "#F5A623"
+                    else:
+                        status_widget.styles.color = "#7FD962"
+                except Exception:
+                    pass
+
+            self._coordinator.set_callbacks(
+                on_trigger=on_trigger,
+                on_status_change=on_status,
+                log_callback=lambda msg: self.query_one("#coord-trigger-log", Log).write(f"{msg}\n")
+            )
+
+            # Arm
+            if await self._coordinator.arm():
+                self.notify("Coordinator armed - monitoring for triggers")
+                trigger_log = self.query_one("#coord-trigger-log", Log)
+                trigger_log.write(f"[*] Coordinator armed with {len(self._coordinator.routes)} routes\n")
+            else:
+                self.notify("Failed to arm coordinator", severity="error")
+
+        except Exception as e:
+            self.notify(f"Arm failed: {e}", severity="error")
+
+    async def _coord_disarm_coordinator(self) -> None:
+        """Disarm the coordinator"""
+        from textual.widgets import Log
+        try:
+            await self._coordinator.disarm()
+            self.notify("Coordinator disarmed")
+
+            trigger_log = self.query_one("#coord-trigger-log", Log)
+            trigger_log.write("[*] Coordinator disarmed\n")
+
+            # Update status
+            status_widget = self.query_one("#coord-status", Static)
+            status_widget.update("READY")
+            status_widget.styles.color = "#7FD962"
+
+        except Exception as e:
+            self.notify(f"Disarm failed: {e}", severity="error")
+
+    async def _coord_clear_routes(self) -> None:
+        """Clear all trigger routes"""
+        from textual.widgets import Log
+        try:
+            # Disarm first if armed
+            if self._coordinator.is_armed:
+                await self._coordinator.disarm()
+
+            # Clear routes
+            self._coordinator.routes.clear()
+
+            # Update display
+            self._update_routes_display()
+
+            trigger_log = self.query_one("#coord-trigger-log", Log)
+            trigger_log.write("[*] All routes cleared\n")
+
+            self.notify("All routes cleared")
+
+        except Exception as e:
+            self.notify(f"Clear failed: {e}", severity="error")
+
+    def _update_routes_display(self) -> None:
+        """Update the active routes display"""
+        try:
+            routes_list = self.query_one("#coord-routes-list", Static)
+            if not self._coordinator.routes:
+                routes_list.update("None")
+            else:
+                route_strs = []
+                for name, route in self._coordinator.routes.items():
+                    status = "●" if route.enabled else "○"
+                    route_strs.append(f"{status} {name}")
+                routes_list.update(" | ".join(route_strs))
+        except Exception:
+            pass
+
+    @property
+    def _coordinator(self):
+        """Get or create coordinator instance"""
+        if not hasattr(self, '_coord_instance'):
+            from ..coordination import get_coordinator
+            self._coord_instance = get_coordinator()
+        return self._coord_instance
 
 
 def run_tui():

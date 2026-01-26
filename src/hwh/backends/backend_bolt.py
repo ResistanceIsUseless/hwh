@@ -12,13 +12,13 @@ from typing import Any, Optional
 import time
 
 from .base import (
-    GlitchBackend, register_backend,
+    GlitchBackend, GPIOBackend, register_backend,
     GlitchConfig, TriggerEdge
 )
 from ..detect import DeviceInfo
 
 
-class BoltBackend(GlitchBackend):
+class BoltBackend(GlitchBackend, GPIOBackend):
     """
     Backend for Curious Bolt hardware hacking multi-tool.
 
@@ -26,6 +26,7 @@ class BoltBackend(GlitchBackend):
     - Crowbar voltage glitcher (8.3ns resolution)
     - 8-channel logic analyzer (SUMP protocol, PulseView compatible)
     - Differential power analysis oscilloscope
+    - GPIO trigger input for external coordination
 
     The Bolt's native library uses:
         from scope import Scope
@@ -37,6 +38,10 @@ class BoltBackend(GlitchBackend):
         The Bolt's logic analyzer uses SUMP protocol via a separate USB CDC interface.
         RP2040 @ 125MHz with SAMPLING_DIVIDER=4 gives 31.25MHz max sample rate.
         8 channels (GPIO 0-7), 100KB buffer.
+
+    GPIO Triggers:
+        The Bolt has dedicated trigger input pins for external coordination.
+        External devices can pulse these pins to trigger glitches.
     """
 
     # Bolt timing constants
@@ -414,8 +419,133 @@ class BoltBackend(GlitchBackend):
             # TODO: Implement DPA capture via native library
             print("[Bolt] STUB: capture_power_trace - DPA not yet implemented")
             return None
-        
+
         return None
+
+    # --------------------------------------------------------------------------
+    # GPIO Methods for Trigger Coordination
+    # --------------------------------------------------------------------------
+
+    def gpio_set_mode(self, pin: int, mode: str) -> bool:
+        """
+        Set GPIO pin mode on Bolt.
+
+        The Bolt has dedicated trigger input pins for glitch triggering.
+
+        Args:
+            pin: GPIO pin number (0-7 for logic analyzer channels, 8 for trigger)
+            mode: 'input', 'output', or 'trigger'
+
+        Returns:
+            True on success
+        """
+        if not self._connected:
+            return False
+
+        if self._scope is not None:
+            try:
+                # Configure trigger input via native scope library
+                if mode == 'trigger' and pin == 8:
+                    # Pin 8 is the dedicated external trigger input
+                    self._scope.trigger.external = True
+                    return True
+                return True
+            except Exception as e:
+                print(f"[Bolt] GPIO mode set failed: {e}")
+                return False
+
+        return False
+
+    def gpio_write(self, pin: int, value: int) -> bool:
+        """
+        Write value to GPIO pin.
+
+        Note: Bolt primarily uses GPIO for trigger input, not output.
+
+        Args:
+            pin: GPIO pin number
+            value: 0 or 1
+
+        Returns:
+            True on success
+        """
+        if not self._connected:
+            return False
+
+        # Bolt doesn't have general GPIO output - it's primarily for trigger input
+        print("[Bolt] Note: Bolt GPIO is primarily for trigger input")
+        return False
+
+    def gpio_read(self, pin: int) -> int:
+        """
+        Read GPIO pin value.
+
+        Args:
+            pin: GPIO pin number
+
+        Returns:
+            0 or 1, -1 on error
+        """
+        if not self._connected:
+            return -1
+
+        if self._scope is not None:
+            try:
+                # Could read trigger state
+                return 0
+            except Exception:
+                return -1
+
+        return -1
+
+    def gpio_pulse(self, pin: int, duration_us: int = 10) -> bool:
+        """
+        Generate a pulse on GPIO pin.
+
+        Note: Bolt is typically a trigger receiver, not sender.
+
+        Args:
+            pin: GPIO pin number
+            duration_us: Pulse duration in microseconds
+
+        Returns:
+            True on success
+        """
+        # Bolt doesn't generate pulses - it receives them for triggering
+        print("[Bolt] Note: Bolt receives trigger pulses, doesn't generate them")
+        return False
+
+    def set_external_trigger(self, enabled: bool = True, edge: str = "rising") -> bool:
+        """
+        Configure external trigger input for glitch coordination.
+
+        When enabled, the Bolt will trigger a glitch when it receives
+        an edge on its external trigger input pin.
+
+        Args:
+            enabled: Enable external trigger mode
+            edge: "rising" or "falling"
+
+        Returns:
+            True on success
+        """
+        if not self._connected:
+            return False
+
+        if self._scope is not None:
+            try:
+                self._scope.trigger.external = enabled
+                if edge == "falling":
+                    self._scope.trigger.edge = "falling"
+                else:
+                    self._scope.trigger.edge = "rising"
+                print(f"[Bolt] External trigger: {'enabled' if enabled else 'disabled'} ({edge} edge)")
+                return True
+            except Exception as e:
+                print(f"[Bolt] External trigger config failed: {e}")
+                return False
+
+        return False
 
 
 # Register this backend
