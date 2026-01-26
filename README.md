@@ -159,19 +159,27 @@ Route events from one device to actions on another:
 5. Click "ARM COORDINATOR" to start monitoring
 6. Glitch triggers automatically when pattern detected
 
-## Glitch Calibration
+## Glitch Calibration (Proof of Concept)
+
+> **Note**: This feature is experimental and under active development. The calibration workflow and API may change.
 
 Press `F6` to access the Calibration tab for measuring and compensating glitch timing latency.
 
-### Why Calibrate?
-Different setups have different latencies due to:
-- Wire length between devices
-- Hardware variations
-- Connection quality
+### Concept
 
-Calibration measures your setup's exact timing so you can:
-- Share glitch parameters with others
-- Apply shared parameters to your setup with automatic compensation
+The idea is to measure the timing characteristics of your specific hardware setup so that glitch parameters can be shared between users. Different setups have different latencies due to:
+- Wire length between devices
+- Hardware response time variations
+- Connection quality and routing
+
+By calibrating your setup, you create a profile that can be used to adjust shared glitch parameters to work on your hardware.
+
+### Current Status
+- ✅ TUI interface with device-specific wiring instructions
+- ✅ Profile save/load infrastructure
+- ✅ Simulation mode for UI testing
+- ⚠️ Hardware calibration integration (in progress)
+- ⚠️ Cross-setup parameter sharing (planned)
 
 ### Calibration Workflow
 1. Connect your glitch device (e.g., Curious Bolt)
@@ -188,17 +196,18 @@ Calibration measures your setup's exact timing so you can:
     LA CH0     ◄─────┘
 ```
 
-### Portable Glitch Configs
+### Future: Portable Glitch Configs
+The goal is to enable sharing glitch parameters like this:
 ```python
 from hwh.automation import PortableGlitchConfig, CalibrationManager
 
-# Load a shared config
+# Load a shared config (e.g., from a writeup or community database)
 config = PortableGlitchConfig.load("stm32_rdp_bypass.json")
 
-# Apply your local calibration
+# Apply your local calibration to compensate for setup differences
 manager = CalibrationManager()
 width, offset = manager.apply_calibration(config, "my_bolt_10cm_wire")
-print(f"Adjusted: width={width}ns, offset={offset}ns")
+print(f"Adjusted for your setup: width={width}ns, offset={offset}ns")
 ```
 
 ## Automation Tools
