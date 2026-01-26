@@ -652,8 +652,9 @@ class HwhApp(App):
 
     async def refresh_device_list(self) -> None:
         """Detect devices and update the list"""
-        # Detect devices
-        detected = detect()
+        # Detect devices (skip RP2040 probing for faster startup)
+        # Users can manually add RP2040 devices if needed
+        detected = detect(identify_unknown=False)
 
         # Convert to our format
         self.available_devices = {}

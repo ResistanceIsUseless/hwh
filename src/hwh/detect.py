@@ -92,27 +92,24 @@ SERIAL_PATTERNS = {
 def _detect_usb_devices() -> list[DeviceInfo]:
     """Detect devices via USB enumeration using pyusb."""
     devices = []
-    
+
     try:
         import usb.core
         import usb.util
     except ImportError:
         # pyusb not installed, skip USB detection
         return devices
-    
+
     for dev in usb.core.find(find_all=True):
         vid_pid = (dev.idVendor, dev.idProduct)
-        
+
         if vid_pid in KNOWN_USB_DEVICES:
             name, device_type, caps = KNOWN_USB_DEVICES[vid_pid]
-            
-            # Try to get serial number
+
+            # Skip serial number fetch - it can be slow on some devices
+            # and we don't strictly need it for device identification
             serial = None
-            try:
-                serial = usb.util.get_string(dev, dev.iSerialNumber) if dev.iSerialNumber else None
-            except (usb.core.USBError, ValueError):
-                pass
-            
+
             devices.append(DeviceInfo(
                 name=name,
                 device_type=device_type,
@@ -122,7 +119,7 @@ def _detect_usb_devices() -> list[DeviceInfo]:
                 usb_path=f"{dev.bus}:{dev.address}",
                 capabilities=caps.copy(),
             ))
-    
+
     return devices
 
 
@@ -168,20 +165,22 @@ def _detect_serial_devices() -> list[DeviceInfo]:
 def _identify_rp2040_device(device: DeviceInfo) -> DeviceInfo:
     """
     Attempt to identify RP2040-based devices (Bolt vs FaultyCat).
-    
+
     Sends identification commands to distinguish between devices.
+    Uses a short timeout to avoid slowing down startup.
     """
     if device.device_type != "rp2040_unknown" or not device.port:
         return device
-    
+
     try:
         import serial
-        
-        with serial.Serial(device.port, 115200, timeout=1) as ser:
+
+        # Use short timeout (200ms) to avoid slow startup
+        with serial.Serial(device.port, 115200, timeout=0.2) as ser:
             # Try Bolt identification
             ser.write(b"*IDN?\r\n")
             response = ser.readline().decode(errors='ignore').strip()
-            
+
             if "bolt" in response.lower() or "curious" in response.lower():
                 device.name = "Curious Bolt"
                 device.device_type = "bolt"
@@ -190,10 +189,10 @@ def _identify_rp2040_device(device: DeviceInfo) -> DeviceInfo:
                 device.name = "FaultyCat"
                 device.device_type = "faultycat"
                 device.capabilities = ["emfi", "glitch", "jtag_scan"]
-                
+
     except Exception:
         pass  # Can't identify, leave as unknown
-    
+
     return device
 
 

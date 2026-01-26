@@ -17,8 +17,9 @@ import asyncio
 import time
 import re
 import os
+import json
 from typing import List, Optional, Dict, Any, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from enum import Enum
 from pathlib import Path
 
@@ -184,6 +185,9 @@ class BoltPanel(DevicePanel):
 
         # Glitch profiles
         self.current_profile: Optional[GlitchProfile] = None
+        self._profiles_dir = Path.home() / ".hwh" / "profiles"
+        self._saved_profiles: Dict[str, Dict[str, Any]] = {}
+        self._load_saved_profiles()
 
         # Logic analyzer settings
         self._logic_sample_rate: int = 1_000_000  # 1 MHz default
@@ -196,78 +200,59 @@ class BoltPanel(DevicePanel):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="bolt-panel"):
-            # Top section - glitch controls
+            # Top section - compact glitch controls with status
             with Horizontal(classes="bolt-top-section"):
-                # Left side - parameter dials
-                with Vertical(classes="bolt-controls"):
-                    # Length dial row
-                    with Horizontal(classes="dial-row"):
-                        yield Static("length", classes="dial-label")
-                        yield Button("-100", classes="btn-dial btn-neg", id="length-sub-100")
-                        yield Button("-10", classes="btn-dial btn-neg", id="length-sub-10")
-                        yield Button("-1", classes="btn-dial btn-neg", id="length-sub-1")
-                        yield CircularDial(
-                            label="length",
-                            value=self.glitch_config.length,
-                            max_value=500,
-                            id="dial-length",
-                            classes="param-dial"
-                        )
-                        yield Button("+1", classes="btn-dial btn-pos", id="length-add-1")
-                        yield Button("+10", classes="btn-dial btn-pos", id="length-add-10")
-                        yield Button("+100", classes="btn-dial btn-pos", id="length-add-100")
-
-                    # Repeat dial row
-                    with Horizontal(classes="dial-row"):
-                        yield Static("repeat", classes="dial-label")
-                        yield Button("-100", classes="btn-dial btn-neg", id="repeat-sub-100")
-                        yield Button("-10", classes="btn-dial btn-neg", id="repeat-sub-10")
-                        yield Button("-1", classes="btn-dial btn-neg", id="repeat-sub-1")
-                        yield CircularDial(
-                            label="repeat",
-                            value=self.glitch_config.repeat,
-                            max_value=1000,
-                            id="dial-repeat",
-                            classes="param-dial"
-                        )
-                        yield Button("+1", classes="btn-dial btn-pos", id="repeat-add-1")
-                        yield Button("+10", classes="btn-dial btn-pos", id="repeat-add-10")
-                        yield Button("+100", classes="btn-dial btn-pos", id="repeat-add-100")
-
-                    # Delay dial row
-                    with Horizontal(classes="dial-row"):
-                        yield Static("delay", classes="dial-label")
-                        yield Button("-100", classes="btn-dial btn-neg", id="delay-sub-100")
-                        yield Button("-10", classes="btn-dial btn-neg", id="delay-sub-10")
-                        yield Button("-1", classes="btn-dial btn-neg", id="delay-sub-1")
-                        yield CircularDial(
-                            label="delay",
-                            value=self.glitch_config.delay,
-                            max_value=500,
-                            id="dial-delay",
-                            classes="param-dial"
-                        )
-                        yield Button("+1", classes="btn-dial btn-pos", id="delay-add-1")
-                        yield Button("+10", classes="btn-dial btn-pos", id="delay-add-10")
-                        yield Button("+100", classes="btn-dial btn-pos", id="delay-add-100")
-
-                # Right side - glitch toggle and status
-                with Vertical(classes="bolt-right-section"):
-                    # Main glitch toggle (continuous mode)
-                    with Vertical(classes="glitch-toggle-container"):
-                        yield Static("GLITCH", classes="glitch-toggle-label")
+                # Left side - glitch toggle and status box (prominent)
+                with Vertical(classes="glitch-status-section"):
+                    with Horizontal(classes="glitch-toggle-row"):
                         yield Switch(id="glitch-toggle", animate=False, classes="glitch-main-switch")
+                        yield Static("GLITCH", classes="glitch-toggle-label")
                         yield Static("off", id="glitch-state-label", classes="glitch-state")
-
-                    # Status display
-                    with Vertical(classes="status-container") as status:
+                    with Vertical(classes="status-box") as status:
                         status.border_title = "status"
-                        yield Static("length:  0", id="status-length", classes="status-line")
-                        yield Static("repeat:  1", id="status-repeat", classes="status-line")
-                        yield Static(" delay:  0", id="status-delay", classes="status-line")
-                        yield Static("", classes="status-spacer")
-                        yield Static("glitch: 0", id="status-count", classes="status-line")
-                        yield Static("time: 00:00:00", id="status-time", classes="status-line")
+                        with Horizontal(classes="status-row"):
+                            yield Static("glitches:", classes="status-label")
+                            yield Static("0", id="status-count", classes="status-value status-count-value")
+                        with Horizontal(classes="status-row"):
+                            yield Static("time:", classes="status-label")
+                            yield Static("00:00:00", id="status-time", classes="status-value")
+
+                # Center - compact parameter controls
+                with Vertical(classes="bolt-controls"):
+                    # Length row
+                    with Horizontal(classes="param-row"):
+                        yield Static("length", classes="param-label")
+                        yield Button("-10", classes="btn-param btn-neg", id="length-sub-10")
+                        yield Button("-1", classes="btn-param btn-neg", id="length-sub-1")
+                        yield Static("0", id="param-length", classes="param-value")
+                        yield Button("+1", classes="btn-param btn-pos", id="length-add-1")
+                        yield Button("+10", classes="btn-param btn-pos", id="length-add-10")
+                        yield Static("0.0ns", id="param-length-ns", classes="param-ns")
+
+                    # Repeat row
+                    with Horizontal(classes="param-row"):
+                        yield Static("repeat", classes="param-label")
+                        yield Button("-10", classes="btn-param btn-neg", id="repeat-sub-10")
+                        yield Button("-1", classes="btn-param btn-neg", id="repeat-sub-1")
+                        yield Static("1", id="param-repeat", classes="param-value")
+                        yield Button("+1", classes="btn-param btn-pos", id="repeat-add-1")
+                        yield Button("+10", classes="btn-param btn-pos", id="repeat-add-10")
+                        yield Static("", classes="param-ns")
+
+                    # Delay row
+                    with Horizontal(classes="param-row"):
+                        yield Static("delay", classes="param-label")
+                        yield Button("-10", classes="btn-param btn-neg", id="delay-sub-10")
+                        yield Button("-1", classes="btn-param btn-neg", id="delay-sub-1")
+                        yield Static("0", id="param-delay", classes="param-value")
+                        yield Button("+1", classes="btn-param btn-pos", id="delay-add-1")
+                        yield Button("+10", classes="btn-param btn-pos", id="delay-add-10")
+                        yield Static("0.0ns", id="param-delay-ns", classes="param-ns")
+
+                # Right side - quick actions
+                with Vertical(classes="quick-actions"):
+                    yield Button("Glitch!", id="btn-single-glitch", classes="btn-glitch-action", variant="primary")
+                    yield Button("Arm", id="btn-arm-triggers", classes="btn-glitch-action")
 
             # Main section with sidebar and content
             with Horizontal(classes="bolt-main-section"):
@@ -311,7 +296,12 @@ class BoltPanel(DevicePanel):
                         with Horizontal(classes="profile-buttons"):
                             yield Button("Load", id="btn-load-profile", classes="btn-profile-action")
                             yield Button("Info", id="btn-profile-info", classes="btn-profile-action")
-                            yield Button("Save", id="btn-save-profile", classes="btn-profile-action")
+                        yield Input(
+                            placeholder="profile name...",
+                            id="save-profile-name",
+                            classes="profile-name-input"
+                        )
+                        yield Button("Save Current", id="btn-save-profile", classes="btn-save-profile")
 
                     # Conditions section
                     with Vertical(classes="conditions-section") as conditions:
@@ -792,7 +782,7 @@ Mode: {'continuous' if self.glitch_running else 'manual'}
         """Update the glitch count display"""
         try:
             count_label = self.query_one("#status-count", Static)
-            count_label.update(f"glitch: {self._glitch_count}")
+            count_label.update(f"{self._glitch_count}")
         except Exception:
             pass
 
@@ -807,7 +797,7 @@ Mode: {'continuous' if self.glitch_running else 'manual'}
             m = (int(elapsed) % 3600) // 60
             s = int(elapsed) % 60
             time_label = self.query_one("#status-time", Static)
-            time_label.update(f"time: {h:02d}:{m:02d}:{s:02d}")
+            time_label.update(f"{h:02d}:{m:02d}:{s:02d}")
         except Exception:
             pass
 
@@ -869,22 +859,17 @@ Mode: {'continuous' if self.glitch_running else 'manual'}
         self._log_output(f"[+] Trigger {channel} = {edge.name}")
 
     def _update_param_display(self, param: str, value: int) -> None:
-        """Update parameter display (dial and status)"""
+        """Update parameter display"""
         try:
-            # Update dial
-            dial = self.query_one(f"#dial-{param}", CircularDial)
-            dial.value = value
+            # Update the value display
+            value_label = self.query_one(f"#param-{param}", Static)
+            value_label.update(str(value))
 
-            # Update status
-            if param == "length":
-                label = self.query_one("#status-length", Static)
-                label.update(f"length:  {value}")
-            elif param == "repeat":
-                label = self.query_one("#status-repeat", Static)
-                label.update(f"repeat:  {value}")
-            elif param == "delay":
-                label = self.query_one("#status-delay", Static)
-                label.update(f" delay:  {value}")
+            # Update ns display for length and delay
+            if param in ("length", "delay"):
+                ns_value = value * self.CLOCK_PERIOD_NS
+                ns_label = self.query_one(f"#param-{param}-ns", Static)
+                ns_label.update(f"{ns_value:.1f}ns")
         except Exception:
             pass
 
@@ -1083,6 +1068,16 @@ Mode: {'continuous' if self.glitch_running else 'manual'}
 
         if button_id == "btn-save-profile":
             await self._save_current_profile()
+            return
+
+        # Single glitch button
+        if button_id == "btn-single-glitch":
+            await self._trigger_glitch()
+            return
+
+        # Arm triggers button
+        if button_id == "btn-arm-triggers":
+            self._arm_triggers()
             return
 
         # Toggle trigger edge
@@ -1287,10 +1282,121 @@ Mode: {'continuous' if self.glitch_running else 'manual'}
         self._log_dir.mkdir(exist_ok=True)
         self._log_output(f"[*] Enable logging switch for file output")
 
+    def _load_saved_profiles(self) -> None:
+        """Load user-saved profiles from disk"""
+        try:
+            if not self._profiles_dir.exists():
+                return
+            profiles_file = self._profiles_dir / "glitch_profiles.json"
+            if profiles_file.exists():
+                with open(profiles_file, "r") as f:
+                    self._saved_profiles = json.load(f)
+        except Exception:
+            self._saved_profiles = {}
+
+    def _save_profiles_to_disk(self) -> None:
+        """Save profiles to disk"""
+        try:
+            self._profiles_dir.mkdir(parents=True, exist_ok=True)
+            profiles_file = self._profiles_dir / "glitch_profiles.json"
+            with open(profiles_file, "w") as f:
+                json.dump(self._saved_profiles, f, indent=2)
+        except Exception as e:
+            self._log_output(f"[!] Failed to save profiles: {e}")
+
     async def _save_current_profile(self) -> None:
         """Save current parameters as a profile"""
-        self._log_output(f"[*] Profile save - length={self.glitch_config.length}, repeat={self.glitch_config.repeat}, delay={self.glitch_config.delay}")
-        self._log_output("[*] Profile saving not yet implemented")
+        try:
+            name_input = self.query_one("#save-profile-name", Input)
+            profile_name = name_input.value.strip()
+
+            if not profile_name:
+                self._log_output("[!] Enter a profile name")
+                return
+
+            # Create profile data
+            profile_data = {
+                "name": profile_name,
+                "length": self.glitch_config.length,
+                "repeat": self.glitch_config.repeat,
+                "delay": self.glitch_config.delay,
+                "length_ns": self.glitch_config.length * self.CLOCK_PERIOD_NS,
+                "delay_ns": self.glitch_config.delay * self.CLOCK_PERIOD_NS,
+                "triggers": [
+                    {
+                        "channel": t.channel,
+                        "edge": t.edge.value,
+                        "enabled": t.enabled
+                    }
+                    for t in self.triggers
+                ],
+                "created": time.strftime("%Y-%m-%d %H:%M:%S"),
+            }
+
+            # Save to profiles dict
+            self._saved_profiles[profile_name] = profile_data
+            self._save_profiles_to_disk()
+
+            # Update the profile select dropdown
+            await self._refresh_profile_select()
+
+            self._log_output(f"[+] Saved profile: {profile_name}")
+            self._log_output(f"    length={self.glitch_config.length} ({profile_data['length_ns']:.1f}ns)")
+            self._log_output(f"    repeat={self.glitch_config.repeat}")
+            self._log_output(f"    delay={self.glitch_config.delay} ({profile_data['delay_ns']:.1f}ns)")
+
+            # Clear the input
+            name_input.value = ""
+
+        except Exception as e:
+            self._log_output(f"[!] Save failed: {e}")
+
+    async def _refresh_profile_select(self) -> None:
+        """Refresh the profile select dropdown with saved profiles"""
+        try:
+            select = self.query_one("#profile-select", Select)
+            # Combine built-in and saved profiles
+            options = [(p.name, p.name) for p in list_all_profiles()]
+            # Add saved profiles with a prefix
+            for name in self._saved_profiles:
+                options.append((f"[saved] {name}", f"saved:{name}"))
+            select.set_options(options)
+        except Exception:
+            pass
+
+    async def _load_saved_profile(self, profile_name: str) -> None:
+        """Load a user-saved profile"""
+        if profile_name not in self._saved_profiles:
+            self._log_output(f"[!] Profile not found: {profile_name}")
+            return
+
+        profile = self._saved_profiles[profile_name]
+
+        # Apply parameters
+        self.glitch_config.length = profile.get("length", 0)
+        self.glitch_config.repeat = profile.get("repeat", 1)
+        self.glitch_config.delay = profile.get("delay", 0)
+
+        self._update_param_display("length", self.glitch_config.length)
+        self._update_param_display("repeat", self.glitch_config.repeat)
+        self._update_param_display("delay", self.glitch_config.delay)
+
+        # Apply triggers if present
+        if "triggers" in profile:
+            for t_data in profile["triggers"]:
+                ch = t_data.get("channel", 0)
+                if 0 <= ch < 8:
+                    edge_val = t_data.get("edge", "-")
+                    if edge_val == "^":
+                        self.triggers[ch].edge = TriggerEdge.RISING
+                    elif edge_val == "v":
+                        self.triggers[ch].edge = TriggerEdge.FALLING
+                    else:
+                        self.triggers[ch].edge = TriggerEdge.DISABLED
+                    self.triggers[ch].enabled = t_data.get("enabled", False)
+                    self._update_trigger_symbol(ch)
+
+        self._log_output(f"[+] Loaded saved profile: {profile_name}")
 
     # Scripting API methods
     def configure(self, length: int = None, repeat: int = None, delay: int = None) -> None:
@@ -1347,7 +1453,16 @@ Mode: {'continuous' if self.glitch_running else 'manual'}
                 self._log_output("[!] Select a profile")
                 return
 
-            profile = GLITCH_PROFILES.get(str(profile_name))
+            profile_name_str = str(profile_name)
+
+            # Check if this is a saved profile
+            if profile_name_str.startswith("saved:"):
+                saved_name = profile_name_str[6:]  # Remove "saved:" prefix
+                await self._load_saved_profile(saved_name)
+                return
+
+            # Load built-in profile
+            profile = GLITCH_PROFILES.get(profile_name_str)
             if not profile:
                 self._log_output(f"[!] Not found: {profile_name}")
                 return

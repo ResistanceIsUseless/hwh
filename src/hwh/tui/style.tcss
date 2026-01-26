@@ -431,25 +431,86 @@ OptionList > .option-list--option-highlighted {
 }
 
 .bolt-top-section {
-    height: 14;
-    max-height: 14;
+    height: auto;
+    max-height: 12;
     padding: 1;
     background: #141618;
 }
 
-.bolt-controls {
-    width: 1fr;
+/* === Glitch Status Section (Left) === */
+
+.glitch-status-section {
+    width: 24;
+    padding: 0 1 0 0;
 }
 
-/* === Dial Rows (Parameter Controls) === */
-
-.dial-row {
+.glitch-toggle-row {
     height: 3;
     align: left middle;
+    padding: 0;
     margin-bottom: 1;
 }
 
-.dial-label {
+.glitch-toggle-label {
+    color: #9DC3CF;
+    text-style: bold;
+    padding: 0 1;
+}
+
+.glitch-main-switch {
+    width: auto;
+}
+
+.glitch-state {
+    color: #B3B8BB;
+    padding: 0 1;
+}
+
+.glitch-active {
+    color: #00ff00;
+    text-style: bold;
+}
+
+.status-box {
+    border: round #2F596D;
+    border-title-color: #5E99AE;
+    padding: 0 1;
+    height: auto;
+}
+
+.status-row {
+    height: 1;
+    align: left middle;
+}
+
+.status-label {
+    width: 10;
+    color: #B3B8BB;
+}
+
+.status-value {
+    color: #9DC3CF;
+    text-style: bold;
+}
+
+.status-count-value {
+    color: #00ff00;
+    text-style: bold;
+}
+
+/* === Parameter Controls (Center) === */
+
+.bolt-controls {
+    width: 1fr;
+    padding: 0 1;
+}
+
+.param-row {
+    height: 3;
+    align: left middle;
+}
+
+.param-label {
     width: 8;
     text-align: right;
     padding-right: 1;
@@ -457,19 +518,27 @@ OptionList > .option-list--option-highlighted {
     text-style: bold;
 }
 
-.param-dial {
-    width: 20;
+.param-value {
+    width: 6;
     text-align: center;
     color: #5E99AE;
+    text-style: bold;
+    background: #1a1c1e;
     padding: 0 1;
 }
 
-.btn-dial {
-    min-width: 5;
-    width: 5;
+.param-ns {
+    width: 10;
+    color: #B3B8BB;
+    padding-left: 1;
+}
+
+.btn-param {
+    min-width: 4;
+    width: 4;
     height: 1;
     margin: 0;
-    padding: 0 1;
+    padding: 0;
     background: #2F596D;
 }
 
@@ -491,59 +560,17 @@ OptionList > .option-list--option-highlighted {
     color: #141618;
 }
 
-/* === Glitch Toggle and Status === */
+/* === Quick Actions (Right) === */
 
-.bolt-right-section {
-    width: 30;
+.quick-actions {
+    width: 12;
+    padding: 0 0 0 1;
     align: center top;
-    padding: 0 1;
 }
 
-.glitch-toggle-container {
+.btn-glitch-action {
     width: 100%;
-    height: auto;
-    align: center middle;
-    padding: 1;
-    border: round #2F596D;
     margin-bottom: 1;
-}
-
-.glitch-toggle-label {
-    text-align: center;
-    color: #9DC3CF;
-    text-style: bold;
-    padding-bottom: 1;
-}
-
-.glitch-main-switch {
-    width: auto;
-}
-
-.glitch-state {
-    text-align: center;
-    color: #B3B8BB;
-    padding-top: 1;
-}
-
-.glitch-active {
-    color: #5E99AE;
-    text-style: bold;
-}
-
-.status-container {
-    width: 100%;
-    border: round #2F596D;
-    border-title-color: #5E99AE;
-    padding: 1;
-}
-
-.status-line {
-    color: #9DC3CF;
-    height: 1;
-}
-
-.status-spacer {
-    height: 1;
 }
 
 /* === Bolt Main Section === */
@@ -616,6 +643,16 @@ OptionList > .option-list--option-highlighted {
 .btn-profile-action {
     width: 1fr;
     min-width: 6;
+}
+
+.profile-name-input {
+    width: 100%;
+    margin-top: 1;
+}
+
+.btn-save-profile {
+    width: 100%;
+    margin-top: 1;
 }
 
 /* === Conditions Section === */
