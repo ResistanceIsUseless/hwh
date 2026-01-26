@@ -9,6 +9,7 @@ Features:
 - ASCII art waveforms (like Bus Pirate's logic command)
 - Scrollable capture buffer
 - Trigger configuration
+- Protocol decoding (SPI, I2C, UART)
 """
 
 from typing import List, Optional, Tuple
@@ -20,6 +21,11 @@ from textual.widgets import Static
 from textual.containers import Container, Vertical, Horizontal
 from textual.reactive import reactive
 
+from .protocol_decoders import (
+    ProtocolType, DecodedCapture, decode_protocol,
+    SPITransaction, I2CTransaction, UARTFrame
+)
+
 
 @dataclass
 class LogicCapture:
@@ -28,6 +34,7 @@ class LogicCapture:
     sample_rate: int = 1000000  # 1MHz default
     samples: List[List[int]] = field(default_factory=list)
     trigger_position: int = 0
+    decoded: Optional[DecodedCapture] = None  # Protocol decoded data
 
 
 @dataclass
@@ -36,6 +43,7 @@ class ChannelConfig:
     enabled: bool = True
     name: str = ""
     color: str = "#5E99AE"
+    protocol_role: str = ""  # e.g., "CLK", "MOSI", "SDA"
 
 
 class LogicAnalyzerWidget(Widget):
@@ -45,6 +53,8 @@ class LogicAnalyzerWidget(Widget):
     Displays captured digital signals as ASCII waveforms:
     CH0 ▔▔▔▔▔▔▁▁▁▁▁▁▔▔▔▔▔▔▁▁▁▁▁▁
     CH1 ▁▁▁▁▁▁▔▔▔▔▔▔▁▁▁▁▁▁▔▔▔▔▔▔
+
+    Supports protocol decoding with inline annotations.
     """
 
     # Unicode characters for waveform drawing
@@ -75,6 +85,11 @@ class LogicAnalyzerWidget(Widget):
         # Capture data
         self.capture: Optional[LogicCapture] = None
 
+        # Protocol decoding
+        self._protocol = ProtocolType.NONE
+        self._protocol_options: dict = {}
+        self._channel_map: dict = {}
+
         # Display state
         self._waveform_lines: List[str] = []
 
@@ -90,6 +105,13 @@ class LogicAnalyzerWidget(Widget):
                     id=f"logic-ch{i}",
                     classes="logic-channel"
                 )
+
+            # Protocol annotation line
+            yield Static(
+                "",
+                id="logic-annotations",
+                classes="logic-annotations"
+            )
 
             # Footer with controls hint
             yield Static(
@@ -115,7 +137,110 @@ class LogicAnalyzerWidget(Widget):
     def set_capture(self, capture: LogicCapture) -> None:
         """Set the capture data to display"""
         self.capture = capture
+
+        # Decode protocol if one is set
+        if self._protocol != ProtocolType.NONE and capture.samples:
+            self._decode_protocol()
+
         self._update_display()
+
+    def set_protocol(
+        self,
+        protocol: ProtocolType,
+        channel_map: dict = None,
+        **options
+    ) -> None:
+        """
+        Set the protocol to decode.
+
+        Args:
+            protocol: Protocol type (SPI, I2C, UART, NONE)
+            channel_map: Maps protocol signals to channels
+                SPI: {'clk': 6, 'mosi': 7, 'miso': 4, 'cs': 5}
+                I2C: {'scl': 1, 'sda': 0}
+                UART: {'rx': 5}
+            **options: Protocol-specific options (baud_rate, cpol, cpha, etc.)
+        """
+        self._protocol = protocol
+        self._channel_map = channel_map or {}
+        self._protocol_options = options
+
+        # Update channel labels based on protocol
+        self._update_channel_labels()
+
+        # Re-decode if we have capture data
+        if self.capture and self.capture.samples:
+            self._decode_protocol()
+            self._update_display()
+
+    def _update_channel_labels(self) -> None:
+        """Update channel labels based on protocol mapping"""
+        # Reset all labels
+        for i, cfg in enumerate(self.channel_configs):
+            cfg.protocol_role = ""
+            cfg.name = f"CH{i}"
+
+        # Set protocol-specific labels
+        if self._protocol == ProtocolType.SPI:
+            labels = {'clk': 'CLK', 'mosi': 'MOSI', 'miso': 'MISO', 'cs': 'CS'}
+        elif self._protocol == ProtocolType.I2C:
+            labels = {'scl': 'SCL', 'sda': 'SDA'}
+        elif self._protocol == ProtocolType.UART:
+            labels = {'rx': 'RX', 'tx': 'TX'}
+        else:
+            return
+
+        for signal, label in labels.items():
+            ch = self._channel_map.get(signal, -1)
+            if 0 <= ch < len(self.channel_configs):
+                self.channel_configs[ch].protocol_role = label
+                self.channel_configs[ch].name = f"{label}"
+
+    def _decode_protocol(self) -> None:
+        """Decode the captured data using the current protocol"""
+        if not self.capture or not self.capture.samples:
+            return
+
+        self.capture.decoded = decode_protocol(
+            samples=self.capture.samples,
+            sample_rate=self.capture.sample_rate,
+            protocol=self._protocol,
+            channel_map=self._channel_map,
+            **self._protocol_options
+        )
+
+    def get_decoded_summary(self) -> str:
+        """Get a summary of decoded data"""
+        if not self.capture or not self.capture.decoded:
+            return "No decoded data"
+
+        decoded = self.capture.decoded
+
+        if decoded.protocol == ProtocolType.SPI:
+            tx_count = len(decoded.spi_transactions)
+            byte_count = sum(len(tx.mosi_bytes) for tx in decoded.spi_transactions)
+            return f"SPI: {tx_count} transaction(s), {byte_count} byte(s)"
+
+        elif decoded.protocol == ProtocolType.I2C:
+            tx_count = len(decoded.i2c_transactions)
+            if tx_count > 0:
+                addrs = set(tx.address for tx in decoded.i2c_transactions)
+                return f"I2C: {tx_count} transaction(s), addresses: {', '.join(f'0x{a:02X}' for a in addrs)}"
+            return f"I2C: {tx_count} transaction(s)"
+
+        elif decoded.protocol == ProtocolType.UART:
+            frame_count = len(decoded.uart_frames)
+            if frame_count > 0:
+                chars = ''.join(
+                    chr(f.byte.value) if f.byte and 32 <= f.byte.value < 127 else '.'
+                    for f in decoded.uart_frames[:20]
+                )
+                if len(decoded.uart_frames) > 20:
+                    chars += "..."
+                return f"UART: {frame_count} byte(s): {chars}"
+            return f"UART: {frame_count} byte(s)"
+
+        return "Unknown protocol"
 
     def _update_display(self) -> None:
         """Update the waveform display"""
@@ -140,6 +265,72 @@ class LogicAnalyzerWidget(Widget):
                 channel_widget.update(waveform)
             except Exception:
                 pass
+
+        # Update protocol annotations
+        try:
+            annotations_widget = self.query_one("#logic-annotations", Static)
+            annotations = self._render_annotations()
+            annotations_widget.update(annotations)
+        except Exception:
+            pass
+
+    def _render_annotations(self) -> str:
+        """Render protocol annotations for the visible window"""
+        if not self.capture or not self.capture.decoded:
+            return ""
+
+        decoded = self.capture.decoded
+        start = self.waveform_offset
+        end = start + self.visible_samples
+
+        # Build annotation line with decoded data at positions
+        annotation_chars = [" "] * self.visible_samples
+        label_pad = "     "  # Match channel label width
+
+        if decoded.protocol == ProtocolType.SPI:
+            for tx in decoded.spi_transactions:
+                # Show MOSI bytes at their sample positions
+                for byte_info in tx.mosi_bytes:
+                    pos = byte_info.sample_start - start
+                    if 0 <= pos < self.visible_samples - 2:
+                        hex_str = f"{byte_info.value:02X}"
+                        for i, c in enumerate(hex_str):
+                            if pos + i < self.visible_samples:
+                                annotation_chars[pos + i] = c
+
+        elif decoded.protocol == ProtocolType.I2C:
+            for tx in decoded.i2c_transactions:
+                # Show address at start position
+                pos = tx.start_sample - start
+                if 0 <= pos < self.visible_samples - 4:
+                    addr_str = f"{tx.address:02X}{'R' if tx.is_read else 'W'}"
+                    for i, c in enumerate(addr_str):
+                        if pos + i < self.visible_samples:
+                            annotation_chars[pos + i] = c
+                # Show data bytes
+                for byte_info in tx.data_bytes:
+                    pos = byte_info.sample_start - start
+                    if 0 <= pos < self.visible_samples - 2:
+                        hex_str = f"{byte_info.value:02X}"
+                        for i, c in enumerate(hex_str):
+                            if pos + i < self.visible_samples:
+                                annotation_chars[pos + i] = c
+
+        elif decoded.protocol == ProtocolType.UART:
+            for frame in decoded.uart_frames:
+                if frame.byte:
+                    pos = frame.byte.sample_start - start
+                    if 0 <= pos < self.visible_samples - 2:
+                        # Show printable chars directly, others as hex
+                        if 32 <= frame.byte.value < 127:
+                            annotation_chars[pos] = chr(frame.byte.value)
+                        else:
+                            hex_str = f"{frame.byte.value:02X}"
+                            for i, c in enumerate(hex_str):
+                                if pos + i < self.visible_samples:
+                                    annotation_chars[pos + i] = c
+
+        return label_pad + "".join(annotation_chars)
 
     def _render_channel(self, channel: int) -> str:
         """Render a single channel's waveform"""

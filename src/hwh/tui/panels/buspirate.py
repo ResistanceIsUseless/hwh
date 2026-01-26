@@ -15,6 +15,7 @@ from textual.widgets import Static, Button, Input, Select, Switch, Log, TabbedCo
 
 from .base import DevicePanel, DeviceInfo, PanelCapability, CommandSuggestion
 from .logic_analyzer import LogicAnalyzerWidget, LogicCapture
+from .protocol_decoders import ProtocolType
 
 
 @dataclass
@@ -468,6 +469,27 @@ class BusPiratePanel(DevicePanel):
                     value="rising",
                     id="logic-trigger-edge",
                     classes="logic-select"
+                )
+
+            # Protocol decoding row
+            with Horizontal(classes="logic-protocol-row"):
+                yield Static("Decode:", classes="logic-label")
+                yield Select(
+                    [
+                        ("None", "none"),
+                        ("SPI", "spi"),
+                        ("I2C", "i2c"),
+                        ("UART", "uart"),
+                    ],
+                    value="none",
+                    id="logic-protocol",
+                    classes="logic-select"
+                )
+                # Protocol-specific channel mapping hints
+                yield Static(
+                    "",
+                    id="logic-protocol-hint",
+                    classes="logic-protocol-hint"
                 )
 
             # SUMP port input (for manual override)
@@ -934,6 +956,10 @@ Available commands:
                     self._sync_protocol_voltage_selects(value)
             except Exception:
                 pass
+
+        # Logic analyzer protocol decoder selection
+        elif select_id == "logic-protocol":
+            self._set_logic_protocol(value)
 
     async def on_switch_changed(self, event: Switch.Changed) -> None:
         """Handle Switch widget changes"""
@@ -1993,6 +2019,57 @@ Available commands:
             except Exception:
                 pass
 
+    def _set_logic_protocol(self, protocol_value: str) -> None:
+        """Set the protocol decoder for the logic analyzer"""
+        if not self._logic_widget:
+            return
+
+        # Map string values to ProtocolType enum
+        protocol_map = {
+            "none": ProtocolType.NONE,
+            "spi": ProtocolType.SPI,
+            "i2c": ProtocolType.I2C,
+            "uart": ProtocolType.UART,
+        }
+
+        protocol = protocol_map.get(protocol_value, ProtocolType.NONE)
+
+        # Default channel mappings for Bus Pirate
+        # These assume standard Bus Pirate pinout
+        channel_map = {}
+        hint_text = ""
+
+        if protocol == ProtocolType.SPI:
+            # Bus Pirate SPI: CLK=CH6, MOSI=CH7, MISO=CH4, CS=CH5
+            channel_map = {"clk": 6, "mosi": 7, "miso": 4, "cs": 5}
+            hint_text = "CLK=CH6 MOSI=CH7 MISO=CH4 CS=CH5"
+        elif protocol == ProtocolType.I2C:
+            # Bus Pirate I2C: SCL=CH6, SDA=CH7
+            channel_map = {"scl": 6, "sda": 7}
+            hint_text = "SCL=CH6 SDA=CH7"
+        elif protocol == ProtocolType.UART:
+            # Bus Pirate UART: RX=CH5
+            channel_map = {"rx": 5}
+            hint_text = "RX=CH5 (baud auto-detect)"
+
+        # Set protocol on widget
+        self._logic_widget.set_protocol(protocol, channel_map)
+
+        # Update hint text
+        try:
+            hint_widget = self.query_one("#logic-protocol-hint", Static)
+            hint_widget.update(hint_text)
+        except Exception:
+            pass
+
+        # Log the change
+        if protocol != ProtocolType.NONE:
+            self._logic_log(f"[*] Protocol decoder: {protocol.name} ({hint_text})")
+            self._update_logic_status(f"Protocol: {protocol.name}")
+        else:
+            self._logic_log("[*] Protocol decoder disabled")
+            self._update_logic_status("Protocol decoding disabled")
+
     async def _start_logic_capture(self) -> None:
         """Start logic analyzer capture using SUMP protocol"""
         if self._logic_capturing:
@@ -2075,6 +2152,11 @@ Available commands:
                         self._logic_widget.scroll_to_trigger()
                         self._logic_log("[+] Capture complete - waveform updated")
                         self._update_logic_status(f"Captured {sample_count} samples - use scroll buttons to navigate")
+
+                        # Show decoded summary if protocol is set
+                        decoded_summary = self._logic_widget.get_decoded_summary()
+                        if decoded_summary and "No decoded" not in decoded_summary:
+                            self._logic_log(f"[+] Decoded: {decoded_summary}")
                 else:
                     self._logic_log("[!] Capture returned no data")
                     self._logic_log("[*] Check device connection and trigger conditions")

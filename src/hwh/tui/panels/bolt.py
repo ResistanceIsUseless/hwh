@@ -30,6 +30,7 @@ from textual.reactive import reactive
 
 from .base import DevicePanel, PanelCapability, CommandSuggestion
 from .logic_analyzer import LogicAnalyzerWidget, LogicCapture
+from .protocol_decoders import ProtocolType
 from ...detect import DeviceInfo
 from ...glitch_profiles import (
     GLITCH_PROFILES, GlitchProfile, find_profiles_for_chip,
@@ -191,6 +192,7 @@ class BoltPanel(DevicePanel):
         self._logic_trigger_edge: str = "rising"
         self._logic_capturing: bool = False
         self._logic_sump_port: Optional[str] = None  # Separate SUMP port (if different from main)
+        self._logic_widget: Optional[LogicAnalyzerWidget] = None
 
     def compose(self) -> ComposeResult:
         with Vertical(id="bolt-panel"):
@@ -422,6 +424,26 @@ class BoltPanel(DevicePanel):
                 classes="logic-select"
             )
 
+        # Protocol decoding row
+        with Horizontal(classes="logic-protocol-row"):
+            yield Static("Decode:", classes="logic-label")
+            yield Select(
+                [
+                    ("None", "none"),
+                    ("SPI", "spi"),
+                    ("I2C", "i2c"),
+                    ("UART", "uart"),
+                ],
+                value="none",
+                id="logic-protocol",
+                classes="logic-select"
+            )
+            yield Static(
+                "",
+                id="logic-protocol-hint",
+                classes="logic-protocol-hint"
+            )
+
         # SUMP port input (for separate LA interface)
         with Horizontal(classes="logic-port-row"):
             yield Static("SUMP Port:", classes="logic-label")
@@ -441,12 +463,13 @@ class BoltPanel(DevicePanel):
             yield Button("Trigger", id="btn-logic-goto-trigger")
 
         # Waveform display - use more width for better visibility
-        yield LogicAnalyzerWidget(
+        self._logic_widget = LogicAnalyzerWidget(
             channels=8,
             visible_samples=120,
             id="logic-waveform",
             classes="logic-waveform"
         )
+        yield self._logic_widget
 
         # Status line
         yield Static(
@@ -1182,6 +1205,66 @@ Mode: {'continuous' if self.glitch_running else 'manual'}
                 pass
             return
 
+    async def on_select_changed(self, event: Select.Changed) -> None:
+        """Handle select widget changes"""
+        select_id = event.select.id
+        if not select_id:
+            return
+
+        value = str(event.value) if event.value else None
+        if not value:
+            return
+
+        # Logic analyzer protocol decoder selection
+        if select_id == "logic-protocol":
+            self._set_logic_protocol(value)
+
+    def _set_logic_protocol(self, protocol_value: str) -> None:
+        """Set the protocol decoder for the logic analyzer"""
+        if not self._logic_widget:
+            return
+
+        # Map string values to ProtocolType enum
+        protocol_map = {
+            "none": ProtocolType.NONE,
+            "spi": ProtocolType.SPI,
+            "i2c": ProtocolType.I2C,
+            "uart": ProtocolType.UART,
+        }
+
+        protocol = protocol_map.get(protocol_value, ProtocolType.NONE)
+
+        # Default channel mappings for Bolt
+        channel_map = {}
+        hint_text = ""
+
+        if protocol == ProtocolType.SPI:
+            # Standard SPI mapping
+            channel_map = {"clk": 0, "mosi": 1, "miso": 2, "cs": 3}
+            hint_text = "CLK=CH0 MOSI=CH1 MISO=CH2 CS=CH3"
+        elif protocol == ProtocolType.I2C:
+            channel_map = {"scl": 0, "sda": 1}
+            hint_text = "SCL=CH0 SDA=CH1"
+        elif protocol == ProtocolType.UART:
+            channel_map = {"rx": 0}
+            hint_text = "RX=CH0 (baud auto-detect)"
+
+        # Set protocol on widget
+        self._logic_widget.set_protocol(protocol, channel_map)
+
+        # Update hint text
+        try:
+            hint_widget = self.query_one("#logic-protocol-hint", Static)
+            hint_widget.update(hint_text)
+        except Exception:
+            pass
+
+        # Log the change
+        if protocol != ProtocolType.NONE:
+            self._log_output(f"[*] Protocol decoder: {protocol.name} ({hint_text})")
+        else:
+            self._log_output("[*] Protocol decoder disabled")
+
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         """Handle input submission"""
         if event.input.id == "bolt-input":
@@ -1422,6 +1505,11 @@ Mode: {'continuous' if self.glitch_running else 'manual'}
                     try:
                         waveform = self.query_one("#logic-waveform", LogicAnalyzerWidget)
                         waveform.set_capture(logic_capture)
+
+                        # Show decoded summary if protocol is set
+                        decoded_summary = waveform.get_decoded_summary()
+                        if decoded_summary and "No decoded" not in decoded_summary:
+                            self._log_output(f"[LA] Decoded: {decoded_summary}")
                     except Exception:
                         pass
 
