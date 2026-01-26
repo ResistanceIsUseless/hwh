@@ -30,6 +30,8 @@ class FilesystemType(Enum):
     CRAMFS = "cramfs"
     CPIO = "cpio"
     COMPRESSED = "compressed"
+    TAR = "tar"
+    ZIP = "zip"
     UNKNOWN = "unknown"
 
 
@@ -96,6 +98,8 @@ class FirmwareExtractor:
             "gzip": shutil.which("gzip"),
             "lzma": shutil.which("lzma"),
             "xz": shutil.which("xz"),
+            "tar": shutil.which("tar"),
+            "unzip": shutil.which("unzip"),
         }
 
         self._tools = tools
@@ -399,6 +403,10 @@ class FirmwareExtractor:
                 fs_type = FilesystemType.CPIO
             elif any(x in line_lower for x in ["gzip", "lzma", "xz compressed", "xz data"]):
                 fs_type = FilesystemType.COMPRESSED
+            elif "tar archive" in line_lower or "posix tar" in line_lower:
+                fs_type = FilesystemType.TAR
+            elif "zip archive" in line_lower or "pk\x03\x04" in line_lower:
+                fs_type = FilesystemType.ZIP
             # Also check for raw filesystem/partition types
             elif "ext2" in line_lower or "ext3" in line_lower or "ext4" in line_lower:
                 self._debug(f"Found EXT filesystem (not directly extractable): {line[:60]}")
@@ -515,6 +523,8 @@ class FirmwareExtractor:
             FilesystemType.UBIFS: self._extract_ubifs,
             FilesystemType.CPIO: self._extract_cpio,
             FilesystemType.COMPRESSED: self._extract_compressed,
+            FilesystemType.TAR: self._extract_tar,
+            FilesystemType.ZIP: self._extract_zip,
         }
 
         handler = handlers.get(fs.fs_type)
@@ -829,6 +839,133 @@ class FirmwareExtractor:
                         fs.extract_path = nested_fs.extract_path
 
         return True
+
+    async def _extract_tar(self, fs: FilesystemEntry) -> bool:
+        """Extract TAR archive and recursively scan for filesystems"""
+        self._debug(f"Extracting TAR archive at offset 0x{fs.offset:X}")
+
+        size = fs.size if fs.size else (self.firmware_path.stat().st_size - fs.offset)
+        carved_path = self.output_dir / f"archive_0x{fs.offset:X}.tar"
+
+        # Check if it's a compressed tar
+        desc_lower = fs.description.lower()
+        if "gzip" in desc_lower or ".gz" in desc_lower:
+            carved_path = carved_path.with_suffix(".tar.gz")
+        elif "bzip" in desc_lower or ".bz2" in desc_lower:
+            carved_path = carved_path.with_suffix(".tar.bz2")
+        elif "xz" in desc_lower:
+            carved_path = carved_path.with_suffix(".tar.xz")
+
+        self._carve_data(fs.offset, size, carved_path)
+
+        extract_dir = self.output_dir / f"tar-root_0x{fs.offset:X}"
+        extract_dir.mkdir(parents=True, exist_ok=True)
+        fs.extract_path = extract_dir
+
+        # Use tar to extract
+        success, stdout, stderr = await self._run_cmd(
+            ["tar", "-xf", str(carved_path), "-C", str(extract_dir)],
+            "Extracting TAR archive"
+        )
+
+        if success or extract_dir.exists():
+            file_count = sum(1 for _ in extract_dir.rglob("*") if _.is_file())
+            self._log(f"[+] TAR extracted {file_count} files")
+
+            # Scan extracted contents for nested filesystems (e.g., .img files)
+            await self._scan_extracted_for_filesystems(extract_dir)
+
+            carved_path.unlink(missing_ok=True)
+            return True
+        else:
+            self._log(f"[!] TAR extraction failed: {stderr[:100]}")
+            return False
+
+    async def _extract_zip(self, fs: FilesystemEntry) -> bool:
+        """Extract ZIP archive and recursively scan for filesystems"""
+        self._debug(f"Extracting ZIP archive at offset 0x{fs.offset:X}")
+
+        size = fs.size if fs.size else (self.firmware_path.stat().st_size - fs.offset)
+        carved_path = self.output_dir / f"archive_0x{fs.offset:X}.zip"
+        self._carve_data(fs.offset, size, carved_path)
+
+        extract_dir = self.output_dir / f"zip-root_0x{fs.offset:X}"
+        extract_dir.mkdir(parents=True, exist_ok=True)
+        fs.extract_path = extract_dir
+
+        # Use unzip to extract
+        success, stdout, stderr = await self._run_cmd(
+            ["unzip", "-o", "-d", str(extract_dir), str(carved_path)],
+            "Extracting ZIP archive"
+        )
+
+        if success or extract_dir.exists():
+            file_count = sum(1 for _ in extract_dir.rglob("*") if _.is_file())
+            self._log(f"[+] ZIP extracted {file_count} files")
+
+            # Scan extracted contents for nested filesystems (e.g., .img files)
+            await self._scan_extracted_for_filesystems(extract_dir)
+
+            carved_path.unlink(missing_ok=True)
+            return True
+        else:
+            self._log(f"[!] ZIP extraction failed: {stderr[:100]}")
+            return False
+
+    async def _scan_extracted_for_filesystems(self, extract_dir: Path) -> None:
+        """Scan extracted archive contents for nested filesystem images"""
+        self._log("[*] Scanning extracted contents for filesystem images...")
+
+        # Look for .img, .squashfs, .jffs2, .bin files
+        image_extensions = {'.img', '.squashfs', '.jffs2', '.ubifs', '.bin', '.rootfs'}
+
+        for item in extract_dir.rglob("*"):
+            if not item.is_file():
+                continue
+
+            suffix = item.suffix.lower()
+            if suffix in image_extensions or item.stat().st_size > 1024 * 1024:  # Also check large files
+                self._debug(f"Checking file: {item.name} ({item.stat().st_size:,} bytes)")
+
+                # Check magic bytes
+                try:
+                    with open(item, 'rb') as f:
+                        magic = f.read(16)
+
+                    fs_type = None
+                    if magic[:4] in (b"hsqs", b"sqsh", b"shsq", b"qshs"):
+                        fs_type = FilesystemType.SQUASHFS
+                        self._log(f"[+] Found SquashFS image: {item.name}")
+                    elif magic[:2] in (b"\x85\x19", b"\x19\x85"):
+                        fs_type = FilesystemType.JFFS2
+                        self._log(f"[+] Found JFFS2 image: {item.name}")
+                    elif magic[:6] == b"070701":
+                        fs_type = FilesystemType.CPIO
+                        self._log(f"[+] Found CPIO archive: {item.name}")
+
+                    if fs_type:
+                        # Create a sub-extractor for this image
+                        sub_extractor = FirmwareExtractor(self.progress_callback)
+                        sub_extractor._tools = self._tools
+                        sub_extractor._binwalk_version = self._binwalk_version
+
+                        if await sub_extractor.load_firmware(str(item)):
+                            # If load detected the filesystem, extract it
+                            if sub_extractor.filesystems:
+                                self._log(f"[*] Extracting nested filesystem from {item.name}...")
+                                result = await sub_extractor.extract_all()
+                                if result.success:
+                                    self._log(f"[+] Extracted {result.total_files} files from {item.name}")
+                            else:
+                                # Try scanning
+                                await sub_extractor.scan()
+                                if sub_extractor.filesystems:
+                                    result = await sub_extractor.extract_all()
+                                    if result.success:
+                                        self._log(f"[+] Extracted {result.total_files} files from {item.name}")
+
+                except Exception as e:
+                    self._debug(f"Error checking {item}: {e}")
 
     def get_extracted_roots(self) -> List[Path]:
         """Get paths to all extracted filesystem roots"""
