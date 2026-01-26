@@ -16,8 +16,10 @@ from typing import Dict, Optional, Type, List, Tuple
 
 from textual.app import App, ComposeResult
 from textual.containers import Container, Vertical, Horizontal, ScrollableContainer
-from textual.widgets import Static, Button, Select, TabbedContent, TabPane, Footer, Header
+from textual.widgets import Static, Button, Select, TabbedContent, TabPane, Footer
 from textual.binding import Binding
+
+from .logo import HeaderBanner, get_mini_header
 
 from ..detect import detect, DeviceInfo
 from .. import __version__
@@ -190,7 +192,7 @@ class HwhApp(App):
         self._split_view_active = False
 
     def compose(self) -> ComposeResult:
-        yield Header()
+        yield HeaderBanner(id="header-banner")
 
         with TabbedContent(id="main-tabs"):
             # Devices tab - always present
@@ -213,7 +215,6 @@ class HwhApp(App):
     def _build_devices_page(self) -> ComposeResult:
         """Build the device selection page"""
         with Vertical(id="devices-page"):
-            yield Static("hwh - Hardware Hacking Toolkit", id="app-title")
             yield Static("Detected Devices:", classes="section-title")
 
             # Device list container

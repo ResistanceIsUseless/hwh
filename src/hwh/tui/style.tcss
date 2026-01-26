@@ -27,10 +27,34 @@ Footer {
     color: #9DC3CF;
 }
 
+/* === Header Banner (ASCII Logo) === */
+
+#header-banner {
+    width: 100%;
+    height: auto;
+    background: #141618;
+    padding: 0;
+    margin: 0;
+    dock: top;
+}
+
+#header-banner .logo-text {
+    text-align: center;
+    width: 100%;
+    padding: 0;
+}
+
+#header-banner .subtitle-text {
+    text-align: center;
+    width: 100%;
+    padding: 0;
+    margin-bottom: 1;
+}
+
 /* === Main Layout === */
 
 #main-tabs {
-    height: 100%;
+    height: 1fr;
 }
 
 TabbedContent ContentSwitcher {
@@ -66,13 +90,6 @@ Tab.-active {
 
 #devices-page {
     padding: 2;
-}
-
-#app-title {
-    text-align: center;
-    text-style: bold;
-    color: #5E99AE;
-    padding-bottom: 1;
 }
 
 .section-title {

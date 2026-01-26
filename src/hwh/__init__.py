@@ -18,7 +18,7 @@ Usage:
     backend = get_backend(devices['buspirate'])
 """
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 from .detect import detect, list_devices
 from .backends import get_backend
