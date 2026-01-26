@@ -2057,21 +2057,59 @@ class BusPirateBackend(BusBackend):
     # Logic Analyzer (SUMP Protocol)
     # --------------------------------------------------------------------------
 
-    def enter_sump_mode(self) -> bool:
+    def _find_buspirate_ports(self) -> tuple[str | None, str | None]:
         """
-        Enter SUMP logic analyzer mode.
+        Find Bus Pirate console and binary ports.
+
+        Bus Pirate 5/6 exposes multiple USB CDC interfaces:
+        - buspirate1 (CDC 0): Terminal/console - used to enter SUMP mode
+        - buspirate3 (CDC 1): Binary interface - used for SUMP protocol & BPIO2
+
+        Returns:
+            Tuple of (console_port, binary_port) or (None, None) if not found
+        """
+        from serial.tools.list_ports import comports
+
+        console = None
+        binary = None
+
+        for port in comports():
+            device_lower = port.device.lower()
+            if 'buspirate1' in device_lower:
+                console = port.device
+            elif 'buspirate3' in device_lower:
+                binary = port.device
+
+        # Fallback: derive from device.port if it contains buspirate
+        if not console and self.device.port:
+            if 'buspirate3' in self.device.port.lower():
+                console = self.device.port.replace('buspirate3', 'buspirate1')
+                binary = self.device.port
+            elif 'buspirate1' in self.device.port.lower():
+                console = self.device.port
+                binary = self.device.port.replace('buspirate1', 'buspirate3')
+
+        return console, binary
+
+    def enter_sump_mode(self, console_port: str | None = None) -> bool:
+        """
+        Enter SUMP logic analyzer mode via console port.
 
         Bus Pirate uses SUMP protocol for logic analyzer functionality.
-        This switches from BPIO2 mode to SUMP mode.
+        This switches from normal mode to SUMP mode via terminal commands.
+
+        Args:
+            console_port: Console port path (buspirate1). If None, auto-detects.
         """
         import serial
         import time
 
-        if not self.device.port:
-            return False
+        if not console_port:
+            console_port, _ = self._find_buspirate_ports()
 
-        # SUMP runs on the console port (buspirate1)
-        console_port = self.device.port
+        if not console_port:
+            print("[BusPirate] Console port not found (buspirate1)")
+            return False
 
         try:
             print(f"[BusPirate] Entering SUMP mode via: {console_port}")
@@ -2081,6 +2119,11 @@ class BusPirateBackend(BusBackend):
             time.sleep(0.1)
             ser.reset_input_buffer()
             ser.reset_output_buffer()
+
+            # Switch to HiZ mode first for clean state
+            ser.write(b'm 1\r\n')
+            time.sleep(0.3)
+            ser.reset_input_buffer()
 
             # Send binmode command
             ser.write(b'binmode\r\n')
@@ -2097,10 +2140,16 @@ class BusPirateBackend(BusBackend):
 
             if ser.in_waiting > 0:
                 response = ser.read(ser.in_waiting)
-                print(f"[BusPirate] SUMP mode: {response.decode('utf-8', errors='ignore')[:100]}")
+                resp_str = response.decode('utf-8', errors='ignore')
+                print(f"[BusPirate] SUMP mode: {resp_str[:100]}")
+
+                # Handle "Save setting?" prompt
+                if 'Save setting' in resp_str:
+                    ser.write(b'y\r\n')
+                    time.sleep(0.3)
 
             ser.close()
-            time.sleep(0.5)
+            time.sleep(0.3)
 
             return True
 
@@ -2119,6 +2168,10 @@ class BusPirateBackend(BusBackend):
     ) -> dict | None:
         """
         Capture logic analyzer data using SUMP protocol.
+
+        Bus Pirate SUMP uses TWO serial ports:
+        - buspirate1 (console): Enter SUMP mode via terminal
+        - buspirate3 (binary): SUMP protocol for data capture
 
         Args:
             sample_rate: Sample rate in Hz (max 62.5MHz on BP5/6)
@@ -2140,17 +2193,23 @@ class BusPirateBackend(BusBackend):
         """
         import serial
 
-        # Bus Pirate SUMP runs on the console port
-        console_port = self.device.port
+        # Find both ports
+        console_port, binary_port = self._find_buspirate_ports()
+
+        if not console_port or not binary_port:
+            print("[BusPirate] Could not find Bus Pirate ports")
+            print(f"  Console (buspirate1): {console_port}")
+            print(f"  Binary (buspirate3): {binary_port}")
+            return None
 
         try:
-            # Enter SUMP mode first
-            if not self.enter_sump_mode():
+            # Enter SUMP mode via console port
+            if not self.enter_sump_mode(console_port):
                 return None
 
-            # Open serial for SUMP
-            print(f"[BusPirate] Opening SUMP connection: {console_port}")
-            sump_serial = serial.Serial(console_port, 115200, timeout=2)
+            # Open BINARY port for SUMP protocol (not console!)
+            print(f"[BusPirate] Opening SUMP connection: {binary_port}")
+            sump_serial = serial.Serial(binary_port, 115200, timeout=2)
 
             # Import and use SUMP client
             from .sump import SUMPClient, SUMPConfig
