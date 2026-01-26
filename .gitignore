@@ -74,6 +74,9 @@ venv.bak/
 .AppleDouble
 .LSOverride
 
+# iCloud sync conflicts (files with " 2" suffix)
+* 2.*
+
 # Project specific
 todo.md
 *.log
