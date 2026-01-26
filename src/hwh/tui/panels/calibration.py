@@ -484,21 +484,28 @@ class CalibrationPanel(Container):
 
             # Create a mock profile for testing
             from ...automation.calibration import CalibrationProfile, JitterStats
+            from datetime import datetime
             self._current_profile = CalibrationProfile(
                 profile_name=profile_name,
+                device_type=self.current_device or "Unknown",
+                device_id="simulated",
+                setup_description="Simulated calibration for testing",
+                wire_length_cm=10.0,
                 trigger_latency_ns=mean,
                 trigger_jitter=JitterStats(
-                    mean=mean,
-                    stddev=stddev,
-                    min=min_val,
-                    max=max_val,
-                    p95=p95,
-                    p99=p99
+                    mean_ns=mean,
+                    std_dev_ns=stddev,
+                    min_ns=min_val,
+                    max_ns=max_val,
+                    p95_ns=p95,
+                    p99_ns=p99,
+                    sample_count=len(measurements)
                 ),
                 width_accuracy=0.95,
                 reference_latency_ns=175.0,
-                device_info={"device": "Simulated", "note": "Test data"},
-                created_at=""
+                calibration_date=datetime.now().isoformat(),
+                sample_count=len(measurements),
+                notes="Simulated data - connect hardware for real measurements"
             )
 
     def _stop_calibration(self) -> None:
@@ -517,11 +524,11 @@ class CalibrationPanel(Container):
 
         if profile.trigger_jitter:
             j = profile.trigger_jitter
-            self._update_result("jitter", f"±{j.stddev:.1f}ns")
-            self._update_result("min", f"{j.min:.1f}ns")
-            self._update_result("max", f"{j.max:.1f}ns")
-            self._update_result("p95", f"{j.p95:.1f}ns")
-            self._update_result("p99", f"{j.p99:.1f}ns")
+            self._update_result("jitter", f"±{j.std_dev_ns:.1f}ns")
+            self._update_result("min", f"{j.min_ns:.1f}ns")
+            self._update_result("max", f"{j.max_ns:.1f}ns")
+            self._update_result("p95", f"{j.p95_ns:.1f}ns")
+            self._update_result("p99", f"{j.p99_ns:.1f}ns")
 
     def _update_result(self, key: str, value: str) -> None:
         """Update a result in the table."""
