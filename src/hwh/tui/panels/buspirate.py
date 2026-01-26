@@ -418,47 +418,94 @@ class BusPiratePanel(DevicePanel):
             yield Log(id="scan-results", classes="scan-log")
 
     def _build_logic_section(self) -> ComposeResult:
-        """Logic analyzer controls"""
+        """Logic analyzer controls - consistent with Bolt panel design"""
         with Vertical():
             yield Static("Logic Analyzer", classes="section-title")
-            yield Static("8 channels @ 62.5MSPS max | Demo mode for testing", classes="help-text")
+            yield Static("8 channels @ 62.5MSPS max | SUMP protocol", classes="help-text")
 
-            with Horizontal(classes="button-row"):
-                yield Button("Capture", id="btn-logic-capture", classes="btn-action")
-                yield Button("Stop", id="btn-logic-stop", classes="btn-action")
-                yield Button("Demo", id="btn-logic-demo", classes="btn-action")
-                yield Button("Export", id="btn-logic-export", classes="btn-action")
-
-            with Grid(classes="config-grid"):
-                yield Static("Rate:")
+            # Controls row - rate and samples
+            with Horizontal(classes="logic-controls"):
+                yield Static("Rate:", classes="logic-label")
                 yield Select(
-                    [("62.5MHz", "62500000"), ("10MHz", "10000000"), ("1MHz", "1000000")],
-                    value="10000000",
-                    id="logic-rate"
+                    [
+                        ("62.5 MHz", "62500000"),
+                        ("31.25 MHz", "31250000"),
+                        ("10 MHz", "10000000"),
+                        ("5 MHz", "5000000"),
+                        ("1 MHz", "1000000"),
+                        ("500 kHz", "500000"),
+                        ("100 kHz", "100000"),
+                    ],
+                    value="1000000",
+                    id="logic-rate",
+                    classes="logic-select"
                 )
-                yield Static("Samples:")
+                yield Static("Samples:", classes="logic-label")
                 yield Select(
-                    [("1K", "1024"), ("8K", "8192"), ("32K", "32768")],
+                    [
+                        ("1K", "1024"),
+                        ("4K", "4096"),
+                        ("8K", "8192"),
+                        ("16K", "16384"),
+                        ("32K", "32768"),
+                    ],
                     value="8192",
-                    id="logic-samples"
+                    id="logic-samples",
+                    classes="logic-select"
                 )
-                yield Static("Trigger:")
+
+            # Trigger row - separate channel and edge selectors like Bolt
+            with Horizontal(classes="logic-trigger-row"):
+                yield Static("Trigger:", classes="logic-label")
                 yield Select(
-                    [("None", "none"), ("CH0 ↑", "ch0_rise"), ("CH0 ↓", "ch0_fall"),
-                     ("CH1 ↑", "ch1_rise"), ("CH1 ↓", "ch1_fall")],
+                    [("None", "none")] + [(f"CH{i}", str(i)) for i in range(8)],
                     value="none",
-                    id="logic-trigger"
+                    id="logic-trigger-channel",
+                    classes="logic-select"
+                )
+                yield Select(
+                    [("Rising", "rising"), ("Falling", "falling")],
+                    value="rising",
+                    id="logic-trigger-edge",
+                    classes="logic-select"
                 )
 
-            # Channel enables - compact row
-            with Horizontal(classes="channel-row"):
-                for i in range(8):
-                    yield Static(f"{i}", classes="channel-num")
-                    yield Switch(id=f"logic-ch{i}", value=True if i < 4 else False)
+            # SUMP port input (for manual override)
+            with Horizontal(classes="logic-port-row"):
+                yield Static("SUMP Port:", classes="logic-label")
+                yield Input(
+                    placeholder="auto-detect (buspirate3)",
+                    id="logic-sump-port",
+                    classes="logic-port-input"
+                )
 
-            # Waveform display using LogicAnalyzerWidget
-            self._logic_widget = LogicAnalyzerWidget(channels=8, visible_samples=60, id="logic-waveform")
+            # Action buttons - consistent with Bolt
+            with Horizontal(classes="logic-buttons"):
+                yield Button("Capture", id="btn-logic-capture", variant="primary")
+                yield Button("Stop", id="btn-logic-stop", variant="error")
+                yield Button("Demo", id="btn-logic-demo", variant="default")
+                yield Button("<<", id="btn-logic-scroll-left")
+                yield Button(">>", id="btn-logic-scroll-right")
+                yield Button("Trigger", id="btn-logic-goto-trigger")
+
+            # Waveform display - use same visible_samples as Bolt
+            self._logic_widget = LogicAnalyzerWidget(
+                channels=8,
+                visible_samples=120,
+                id="logic-waveform",
+                classes="logic-waveform"
+            )
             yield self._logic_widget
+
+            # Status line for updates - like Bolt
+            yield Static(
+                "Ready - configure settings and click Capture",
+                id="logic-status",
+                classes="logic-status"
+            )
+
+            # Log output for detailed status messages
+            yield Log(id="logic-log", classes="logic-log")
 
     def _build_power_section(self) -> ComposeResult:
         """Power supply and measurement controls"""
@@ -803,8 +850,12 @@ Available commands:
             await self._stop_logic_capture()
         elif button_id == "btn-logic-demo":
             await self._load_logic_demo()
-        elif button_id == "btn-logic-export":
-            self.log_output("[*] Export not implemented yet")
+        elif button_id == "btn-logic-scroll-left":
+            self._logic_scroll(-50)
+        elif button_id == "btn-logic-scroll-right":
+            self._logic_scroll(50)
+        elif button_id == "btn-logic-goto-trigger":
+            self._logic_goto_trigger()
 
         # Scan tab
         elif button_id == "btn-jtag-scan":
@@ -1907,48 +1958,91 @@ Available commands:
     # Logic Analyzer Functions
     # --------------------------------------------------------------------------
 
+    def _update_logic_status(self, message: str) -> None:
+        """Update the logic analyzer status line"""
+        try:
+            status = self.query_one("#logic-status", Static)
+            status.update(message)
+        except Exception:
+            pass
+
+    def _logic_log(self, message: str) -> None:
+        """Log message to the logic analyzer log widget"""
+        try:
+            log_widget = self.query_one("#logic-log", Log)
+            log_widget.write_line(message)
+        except Exception:
+            pass
+        # Also send to main log
+        self.log_output(message)
+
+    def _logic_scroll(self, delta: int) -> None:
+        """Scroll the logic analyzer waveform view"""
+        if self._logic_widget:
+            try:
+                self._logic_widget.scroll(delta)
+            except Exception:
+                pass
+
+    def _logic_goto_trigger(self) -> None:
+        """Scroll to trigger position in waveform"""
+        if self._logic_widget:
+            try:
+                self._logic_widget.scroll_to_trigger()
+                self._update_logic_status("Scrolled to trigger position")
+            except Exception:
+                pass
+
     async def _start_logic_capture(self) -> None:
         """Start logic analyzer capture using SUMP protocol"""
         if self._logic_capturing:
-            self.log_output("[!] Capture already in progress")
+            self._logic_log("[!] Capture already in progress")
             return
 
         self._logic_capturing = True
-        self.log_output("[*] Starting logic capture...")
+        self._update_logic_status("Starting capture...")
+        self._logic_log("[*] Starting logic capture...")
 
-        # Get config from UI
+        # Get config from UI - use new separate trigger selectors like Bolt
         try:
             rate_select = self.query_one("#logic-rate", Select)
             samples_select = self.query_one("#logic-samples", Select)
-            trigger_select = self.query_one("#logic-trigger", Select)
+            trigger_ch_select = self.query_one("#logic-trigger-channel", Select)
+            trigger_edge_select = self.query_one("#logic-trigger-edge", Select)
+            sump_port_input = self.query_one("#logic-sump-port", Input)
 
-            sample_rate = int(rate_select.value) if rate_select.value else 10000000
-            num_samples = int(samples_select.value) if samples_select.value else 8192
-            trigger = str(trigger_select.value) if trigger_select.value else "none"
+            sample_rate = int(rate_select.value) if rate_select.value != Select.BLANK else 1000000
+            num_samples = int(samples_select.value) if samples_select.value != Select.BLANK else 8192
 
-            self.log_output(f"[*] Rate: {sample_rate/1e6:.1f}MHz, Samples: {num_samples}, Trigger: {trigger}")
+            # Parse trigger settings
+            trigger_channel = None
+            trigger_ch_val = trigger_ch_select.value
+            if trigger_ch_val and trigger_ch_val != "none" and trigger_ch_val != Select.BLANK:
+                trigger_channel = int(trigger_ch_val)
+
+            trigger_edge = str(trigger_edge_select.value) if trigger_edge_select.value != Select.BLANK else "rising"
+
+            # Get custom SUMP port if specified
+            custom_port = sump_port_input.value.strip() if sump_port_input.value else None
+
+            self._logic_log(f"[*] Rate: {sample_rate/1e6:.1f}MHz, Samples: {num_samples}")
+            if trigger_channel is not None:
+                self._logic_log(f"[*] Trigger: CH{trigger_channel} {trigger_edge} edge")
+            else:
+                self._logic_log("[*] Trigger: Immediate (no trigger)")
+
         except Exception as e:
-            self.log_output(f"[!] Config error: {e}")
+            self._logic_log(f"[!] Config error: {e}")
+            self._update_logic_status(f"Config error: {e}")
             self._logic_capturing = False
             return
 
-        # Parse trigger config
-        trigger_channel = None
-        trigger_edge = "rising"
-        if trigger != "none":
-            # Parse "ch0_rise" or "ch1_fall" format
-            parts = trigger.split("_")
-            if len(parts) == 2:
-                trigger_channel = int(parts[0].replace("ch", ""))
-                trigger_edge = "rising" if parts[1] == "rise" else "falling"
-                self.log_output(f"[*] Trigger on CH{trigger_channel} {trigger_edge} edge")
-
         # Try to use the backend for real capture
         if self._backend and hasattr(self._backend, 'capture_logic'):
-            self.log_output("[*] Entering SUMP mode...")
+            self._update_logic_status(f"Capturing at {sample_rate/1e6:.1f}MHz...")
+            self._logic_log("[*] Entering SUMP mode...")
             try:
                 # Run capture in background to avoid blocking UI
-                import asyncio
                 loop = asyncio.get_event_loop()
 
                 # Run the blocking capture in executor
@@ -1965,7 +2059,8 @@ Available commands:
                 )
 
                 if result and result.get("samples"):
-                    self.log_output(f"[+] Captured {len(result['samples'][0])} samples")
+                    sample_count = len(result['samples'][0]) if result.get('samples') else 0
+                    self._logic_log(f"[+] Captured {sample_count} samples")
 
                     # Convert to LogicCapture format
                     capture = LogicCapture(
@@ -1978,17 +2073,21 @@ Available commands:
                     if self._logic_widget:
                         self._logic_widget.set_capture(capture)
                         self._logic_widget.scroll_to_trigger()
-                        self.log_output("[+] Capture complete - waveform updated")
+                        self._logic_log("[+] Capture complete - waveform updated")
+                        self._update_logic_status(f"Captured {sample_count} samples - use scroll buttons to navigate")
                 else:
-                    self.log_output("[!] Capture returned no data")
-                    self.log_output("[*] Check device connection and trigger conditions")
+                    self._logic_log("[!] Capture returned no data")
+                    self._logic_log("[*] Check device connection and trigger conditions")
+                    self._update_logic_status("Capture failed - no data returned")
 
             except Exception as e:
-                self.log_output(f"[!] Capture error: {e}")
-                self.log_output("[*] Use 'Demo' button to test with sample data")
+                self._logic_log(f"[!] Capture error: {e}")
+                self._logic_log("[*] Use 'Demo' button to test with sample data")
+                self._update_logic_status(f"Capture error: {e}")
         else:
-            self.log_output("[!] No backend available for hardware capture")
-            self.log_output("[*] Use 'Demo' button to test with sample data")
+            self._logic_log("[!] No backend available for hardware capture")
+            self._logic_log("[*] Use 'Demo' button to test with sample data")
+            self._update_logic_status("No backend - use Demo to test")
 
         self._logic_capturing = False
 
@@ -1998,13 +2097,15 @@ Available commands:
             return
 
         self._logic_capturing = False
-        self.log_output("[*] Capture stopped")
+        self._logic_log("[*] Capture stopped")
+        self._update_logic_status("Capture stopped")
 
     async def _load_logic_demo(self) -> None:
         """Load demo capture data for testing the waveform display"""
         import random
 
-        self.log_output("[*] Loading demo capture data...")
+        self._logic_log("[*] Loading demo capture data...")
+        self._update_logic_status("Loading demo data...")
 
         # Generate realistic-looking demo waveforms
         samples = []
@@ -2065,7 +2166,9 @@ Available commands:
         if self._logic_widget:
             self._logic_widget.set_capture(capture)
             self._logic_widget.scroll_to_trigger()
-            self.log_output(f"[+] Loaded {num_samples} samples, trigger at position {glitch_pos}")
-            self.log_output("[*] CH0=CLK, CH1=DATA, CH2=CS, CH3=GLITCH_TRIGGER")
+            self._logic_log(f"[+] Loaded {num_samples} samples, trigger at position {glitch_pos}")
+            self._logic_log("[*] CH0=CLK, CH1=DATA, CH2=CS, CH3=GLITCH_TRIGGER")
+            self._update_logic_status(f"Demo loaded: {num_samples} samples - use scroll buttons to navigate")
         else:
-            self.log_output("[!] Logic widget not initialized")
+            self._logic_log("[!] Logic widget not initialized")
+            self._update_logic_status("Error: Logic widget not initialized")
