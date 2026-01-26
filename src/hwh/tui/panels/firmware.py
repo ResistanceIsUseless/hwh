@@ -402,11 +402,47 @@ class FirmwarePanel(Container):
     async def load_firmware(self, path: str) -> bool:
         """Load a firmware file"""
         self._update_action("Loading...")
+        self._log_output(f"[DEBUG] Loading firmware: {path}")
+
+        # Check if path exists
+        p = Path(path).resolve()
+        if not p.exists():
+            self._log_output(f"[!] File not found: {path}")
+            self._update_action("File not found")
+            return False
+
+        self._log_output(f"[DEBUG] Resolved path: {p}")
+        self._log_output(f"[DEBUG] File size: {p.stat().st_size:,} bytes")
+
+        # Check file extension for special handling
+        suffix = p.suffix.lower()
+        self._log_output(f"[DEBUG] File extension: {suffix}")
+
+        # Check if it's already an extracted filesystem directory
+        if p.is_dir():
+            self._log_output(f"[*] Path is a directory - treating as extracted filesystem")
+            self.firmware_path = p
+            self.extracted_roots = [p]
+            self.current_root = p
+            await self._build_file_tree()
+            self._update_status(f"Loaded directory: {p.name}")
+            self._update_action("Directory loaded - browse files directly")
+            return True
+
+        # Check if it's a raw filesystem image (.img, .bin, .squashfs, etc.)
+        if suffix in ('.img', '.squashfs', '.jffs2', '.ubifs'):
+            self._log_output(f"[*] Detected raw filesystem image: {suffix}")
+
         success = await self.extractor.load_firmware(path)
         if success:
             self.firmware_path = self.extractor.firmware_path
             self._update_status(f"Loaded: {self.firmware_path.name}")
             self._log_output(f"[+] Firmware loaded: {self.firmware_path}")
+
+            # Show file info
+            with open(self.firmware_path, 'rb') as f:
+                magic = f.read(16)
+            self._log_output(f"[DEBUG] Magic bytes: {magic[:8].hex()} {magic[8:16].hex()}")
 
             # Check tools after loading
             self._check_and_show_tools()
@@ -421,13 +457,18 @@ class FirmwarePanel(Container):
 
     async def scan_firmware(self) -> List[FilesystemEntry]:
         """Scan loaded firmware for filesystems"""
+        self._log_output("[DEBUG] Starting scan...")
+
         if not self.firmware_path:
             self._log_output("[!] No firmware loaded")
             self._update_action("No firmware - Load a file first")
             return []
 
+        self._log_output(f"[DEBUG] Scanning: {self.firmware_path}")
+
         # Check for binwalk
         if not self.extractor._tools.get("binwalk"):
+            self._log_output("[DEBUG] Checking dependencies...")
             self.extractor.check_dependencies()
         if not self.extractor._tools.get("binwalk"):
             self._log_output("[!] binwalk not installed - cannot scan")
@@ -435,6 +476,9 @@ class FirmwarePanel(Container):
             self._update_action("Missing binwalk!")
             self._update_tools_status("[!] Missing: binwalk")
             return []
+
+        self._log_output(f"[DEBUG] binwalk path: {self.extractor._tools.get('binwalk')}")
+        self._log_output(f"[DEBUG] binwalk version: {self.extractor._binwalk_version}")
 
         self._update_action("Scanning...")
         self._show_progress(True)
@@ -445,6 +489,10 @@ class FirmwarePanel(Container):
         self._update_progress(100)
         self._show_progress(False)
 
+        self._log_output(f"[DEBUG] Scan complete: {len(filesystems)} filesystems found")
+        for fs in filesystems:
+            self._log_output(f"[DEBUG]   {fs.fs_type.value} @ 0x{fs.offset:X}, size={fs.size}")
+
         await self._update_filesystem_list(filesystems)
 
         if filesystems:
@@ -452,11 +500,14 @@ class FirmwarePanel(Container):
             self._log_output(f"[*] Next: Click 'Extract All' or type 'extract'")
         else:
             self._update_action("No filesystems found")
+            self._log_output("[DEBUG] No filesystems detected - check if file is a valid firmware image")
 
         return filesystems
 
     async def extract_firmware(self) -> ExtractionResult:
         """Extract all filesystems from firmware"""
+        self._log_output("[DEBUG] Starting extraction...")
+
         if not self.firmware_path:
             self._log_output("[!] No firmware loaded")
             self._update_action("No firmware - Load a file first")
@@ -466,6 +517,9 @@ class FirmwarePanel(Container):
                 output_dir=Path("."),
                 error="No firmware loaded"
             )
+
+        self._log_output(f"[DEBUG] Firmware path: {self.firmware_path}")
+        self._log_output(f"[DEBUG] Output dir: {self.extractor.output_dir}")
 
         # Check tools before extraction
         if not self.extractor._tools:
@@ -477,6 +531,11 @@ class FirmwarePanel(Container):
             self._log_output(f"[!] Missing required tools: {', '.join(missing)}")
             self._log_output("[*] Extraction may fail - install missing tools first")
 
+        # Show available tools
+        self._log_output("[DEBUG] Available tools:")
+        for tool, path in self.extractor._tools.items():
+            self._log_output(f"[DEBUG]   {tool}: {path or 'NOT FOUND'}")
+
         self._update_action("Extracting...")
         self._show_progress(True)
         self._update_progress(10)
@@ -486,16 +545,31 @@ class FirmwarePanel(Container):
         self._update_progress(100)
         self._show_progress(False)
 
+        self._log_output(f"[DEBUG] Extraction result: success={result.success}, count={result.extracted_count}")
+        self._log_output(f"[DEBUG] Output dir exists: {result.output_dir.exists() if result.output_dir else 'N/A'}")
+
         if result.success:
             self.extracted_roots = self.extractor.get_extracted_roots()
+            self._log_output(f"[DEBUG] Found {len(self.extracted_roots)} extracted roots")
+            for root in self.extracted_roots:
+                self._log_output(f"[DEBUG]   Root: {root}")
+                if root.exists():
+                    file_count = sum(1 for _ in root.rglob("*") if _.is_file())
+                    self._log_output(f"[DEBUG]   Files: {file_count}")
+
             if self.extracted_roots:
                 self.current_root = self.extracted_roots[0]
+                self._log_output(f"[DEBUG] Set current_root to: {self.current_root}")
                 await self._update_extracted_roots()
                 await self._build_file_tree()
                 self._update_action(f"Extracted {result.extracted_count} filesystem(s), {result.total_files} files")
                 self._update_status(f"Extracted: {self.firmware_path.name}")
                 self._log_output("[*] Next: Browse files or run security scans")
+            else:
+                self._log_output("[!] No extracted roots found after extraction")
+                self._update_action("Extraction completed but no files found")
         else:
+            self._log_output(f"[DEBUG] Extraction failed: {result.error}")
             self._update_action(f"Extraction failed: {result.error or 'unknown error'}")
             if "unsquashfs" in str(result.error).lower() or "sasquatch" in str(result.error).lower():
                 self._log_output("[!] SquashFS extraction failed - try: brew install sasquatch")
@@ -560,22 +634,29 @@ class FirmwarePanel(Container):
     async def _build_file_tree(self) -> None:
         """Build the file tree for the current root"""
         if not self.current_root:
+            self._log_output("[DEBUG] _build_file_tree: no current_root")
             return
+
+        self._log_output(f"[DEBUG] Building tree for: {self.current_root}")
 
         try:
             container = self.query_one("#file-tree-container", ScrollableContainer)
             await container.remove_children()
 
-            # Create a simple tree widget
+            # Create a tree widget with lazy loading
             tree = Tree(self.current_root.name, id="file-tree")
+            tree.root.data = self.current_root  # Store path in root node
             tree.root.expand()
 
-            # Add files/directories (limited depth for performance)
-            await self._populate_tree_node(tree.root, self.current_root, max_depth=3)
+            # Only load first level initially - children are loaded on expand
+            await self._populate_tree_node_lazy(tree.root, self.current_root)
 
             await container.mount(tree)
+            self._log_output(f"[DEBUG] Tree mounted with root: {self.current_root.name}")
         except Exception as e:
             self._log_output(f"[!] Error building tree: {e}")
+            import traceback
+            self._log_output(f"[DEBUG] {traceback.format_exc()}")
 
     async def _populate_tree_node(
         self,
@@ -584,7 +665,7 @@ class FirmwarePanel(Container):
         max_depth: int,
         current_depth: int = 0
     ) -> None:
-        """Recursively populate tree nodes"""
+        """Recursively populate tree nodes (legacy method)"""
         if current_depth >= max_depth:
             return
 
@@ -593,17 +674,86 @@ class FirmwarePanel(Container):
 
             for item in items[:100]:  # Limit items per directory
                 if item.is_dir():
-                    child = node.add(f"[dir]{item.name}/", data=item)
+                    child = node.add(f"📁 {item.name}/", data=item)
                     if current_depth < max_depth - 1:
                         await self._populate_tree_node(child, item, max_depth, current_depth + 1)
                 else:
                     size = item.stat().st_size
                     size_str = self._format_size(size)
-                    node.add(f"{item.name} ({size_str})", data=item)
+                    node.add(f"📄 {item.name} ({size_str})", data=item)
         except PermissionError:
             pass
         except Exception:
             pass
+
+    async def _populate_tree_node_lazy(self, node: TreeNode, path: Path) -> None:
+        """Populate tree node with lazy loading - only loads immediate children"""
+        try:
+            if not path.exists():
+                self._log_output(f"[DEBUG] Path does not exist: {path}")
+                return
+
+            if not path.is_dir():
+                self._log_output(f"[DEBUG] Path is not a directory: {path}")
+                return
+
+            items = sorted(path.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
+            self._log_output(f"[DEBUG] Found {len(items)} items in {path.name}")
+
+            count = 0
+            for item in items[:200]:  # Limit items per directory
+                count += 1
+                if item.is_dir():
+                    # Add directory with placeholder to show it's expandable
+                    child = node.add(f"📁 {item.name}/", data=item)
+                    child.allow_expand = True
+                    # Add a placeholder child so the expand arrow shows
+                    # This will be replaced when the node is expanded
+                    child.add("...", data=None)
+                else:
+                    try:
+                        size = item.stat().st_size
+                        size_str = self._format_size(size)
+                        node.add(f"📄 {item.name} ({size_str})", data=item)
+                    except (PermissionError, OSError):
+                        node.add(f"📄 {item.name} (?)", data=item)
+
+            if len(items) > 200:
+                node.add(f"... and {len(items) - 200} more items", data=None)
+
+            self._log_output(f"[DEBUG] Added {count} items to tree node")
+
+        except PermissionError as e:
+            self._log_output(f"[DEBUG] Permission denied: {path}")
+            node.add("⛔ Permission denied", data=None)
+        except Exception as e:
+            self._log_output(f"[DEBUG] Error loading {path}: {e}")
+            node.add(f"❌ Error: {e}", data=None)
+
+    async def on_tree_node_expanded(self, event: Tree.NodeExpanded) -> None:
+        """Handle tree node expansion - load children lazily"""
+        node = event.node
+        path = node.data
+
+        self._log_output(f"[DEBUG] Node expanded: {node.label}, path={path}")
+
+        if not path or not isinstance(path, Path):
+            self._log_output("[DEBUG] No path data for expanded node")
+            return
+
+        if not path.is_dir():
+            self._log_output("[DEBUG] Expanded node is not a directory")
+            return
+
+        # Check if children are already loaded (more than just placeholder)
+        children = list(node.children)
+        if len(children) == 1 and children[0].data is None:
+            # Remove placeholder and load actual children
+            self._log_output(f"[DEBUG] Loading children for: {path}")
+            node.remove_children()
+            await self._populate_tree_node_lazy(node, path)
+        else:
+            self._log_output(f"[DEBUG] Children already loaded: {len(children)} items")
 
     def _format_size(self, size: int) -> str:
         """Format file size for display"""
@@ -848,6 +998,26 @@ class FirmwarePanel(Container):
                 await self.load_firmware(" ".join(parts[1:]))
             else:
                 self._log_output("[!] Usage: load <path>")
+        elif cmd == "browse":
+            if len(parts) > 1:
+                browse_path = Path(" ".join(parts[1:])).resolve()
+                if browse_path.exists():
+                    if browse_path.is_dir():
+                        self.current_root = browse_path
+                        self.extracted_roots = [browse_path]
+                        await self._build_file_tree()
+                        self._log_output(f"[+] Browsing: {browse_path}")
+                    else:
+                        self._log_output("[!] Path is not a directory")
+                else:
+                    self._log_output(f"[!] Path not found: {browse_path}")
+            else:
+                self._log_output("[!] Usage: browse <directory_path>")
+        elif cmd == "debug":
+            # Toggle debug mode
+            from ...firmware import extractor
+            extractor.DEBUG = not extractor.DEBUG
+            self._log_output(f"[*] Debug mode: {'ON' if extractor.DEBUG else 'OFF'}")
         elif cmd == "scan":
             await self.scan_firmware()
         elif cmd == "extract":
@@ -918,6 +1088,8 @@ Firmware Analysis Commands:
   load <path>         - Load firmware file
   scan                - Scan for filesystems
   extract             - Extract all filesystems
+  browse <dir>        - Browse a directory directly
+  debug               - Toggle debug logging
 
 Security Analysis:
   analyze             - Run full security scan

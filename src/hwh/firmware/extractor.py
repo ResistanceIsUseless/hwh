@@ -12,10 +12,14 @@ import asyncio
 import struct
 import shutil
 import subprocess
+import os
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import List, Optional, Callable, Dict, Any
+
+# Debug flag - set to True for verbose output
+DEBUG = True
 
 
 class FilesystemType(Enum):
@@ -74,6 +78,11 @@ class FirmwareExtractor:
         """Log a message via callback"""
         if self.progress_callback:
             self.progress_callback(message)
+
+    def _debug(self, message: str) -> None:
+        """Log debug message (only when DEBUG is True)"""
+        if DEBUG and self.progress_callback:
+            self.progress_callback(f"[DEBUG] {message}")
 
     def check_dependencies(self) -> Dict[str, bool]:
         """Check which extraction tools are available"""
@@ -156,6 +165,41 @@ class FirmwareExtractor:
         self._log(f"[+] Loaded: {firmware_path.name}")
         self._log(f"[*] Size: {size:,} bytes ({size / 1024 / 1024:.2f} MB)")
 
+        # Check file magic to identify type
+        with open(firmware_path, 'rb') as f:
+            magic = f.read(16)
+
+        self._debug(f"File magic: {magic[:8].hex()}")
+
+        # Check if this is already a raw filesystem image
+        if magic[:4] in (b"hsqs", b"sqsh", b"shsq", b"qshs"):
+            self._log("[*] File appears to be a raw SquashFS image")
+            self._log("[*] Will extract directly without scanning")
+            # Pre-populate filesystem list for direct extraction
+            fs_size = self._find_squashfs_size(0)
+            self.filesystems = [FilesystemEntry(
+                offset=0,
+                size=fs_size or size,
+                fs_type=FilesystemType.SQUASHFS,
+                description="Direct SquashFS image"
+            )]
+        elif magic[:2] == b"\x85\x19" or magic[:2] == b"\x19\x85":
+            self._log("[*] File appears to be a raw JFFS2 image")
+            self.filesystems = [FilesystemEntry(
+                offset=0,
+                size=size,
+                fs_type=FilesystemType.JFFS2,
+                description="Direct JFFS2 image"
+            )]
+        elif magic[:6] == b"070701":
+            self._log("[*] File appears to be a CPIO archive")
+            self.filesystems = [FilesystemEntry(
+                offset=0,
+                size=size,
+                fs_type=FilesystemType.CPIO,
+                description="Direct CPIO archive"
+            )]
+
         return True
 
     async def scan(self) -> List[FilesystemEntry]:
@@ -163,6 +207,10 @@ class FirmwareExtractor:
         if not self.firmware_path:
             self._log("[!] No firmware loaded")
             return []
+
+        self._debug(f"Firmware path: {self.firmware_path}")
+        self._debug(f"File exists: {self.firmware_path.exists()}")
+        self._debug(f"File size: {self.firmware_path.stat().st_size if self.firmware_path.exists() else 'N/A'}")
 
         if not self._tools.get("binwalk"):
             self._log("[!] binwalk not installed")
@@ -174,6 +222,7 @@ class FirmwareExtractor:
             self._detect_binwalk_version()
 
         self._log("[*] Scanning firmware with binwalk...")
+        self._debug(f"Binwalk version: {self._binwalk_version}")
 
         try:
             # binwalk v2.x uses -B flag, v3.x doesn't need it
@@ -181,6 +230,8 @@ class FirmwareExtractor:
                 cmd = ["binwalk", str(self.firmware_path)]
             else:
                 cmd = ["binwalk", "-B", str(self.firmware_path)]
+
+            self._debug(f"Running command: {' '.join(cmd)}")
 
             result = await asyncio.get_event_loop().run_in_executor(
                 None,
@@ -192,13 +243,27 @@ class FirmwareExtractor:
                 )
             )
 
+            self._debug(f"binwalk return code: {result.returncode}")
+            self._debug(f"binwalk stdout length: {len(result.stdout)}")
+            self._debug(f"binwalk stderr length: {len(result.stderr)}")
+
             # Log raw output for debugging
+            if result.stdout:
+                self._debug("=== binwalk raw output ===")
+                for line in result.stdout.strip().splitlines()[:30]:
+                    self._debug(f"  {line}")
+                if len(result.stdout.strip().splitlines()) > 30:
+                    self._debug(f"  ... ({len(result.stdout.strip().splitlines())} total lines)")
+
             if result.stderr:
                 for line in result.stderr.strip().splitlines():
                     if "error" in line.lower():
                         self._log(f"[!] {line}")
+                    else:
+                        self._debug(f"stderr: {line}")
 
             self.filesystems = self._parse_binwalk_output(result.stdout, self._binwalk_version)
+            self._debug(f"Parsed {len(self.filesystems)} filesystem entries")
 
             if self.filesystems:
                 self._log(f"[+] Found {len(self.filesystems)} filesystem(s):")
@@ -309,12 +374,15 @@ class FirmwareExtractor:
             0x00000000    65536   squashfs    SquashFS...
         """
         entries = []
+        self._debug(f"Parsing binwalk output (version={version})")
+        self._debug(f"Output has {len(output.strip().splitlines())} lines")
 
         for line in output.strip().splitlines():
             line_lower = line.lower()
 
             # Skip header lines
             if line.startswith("DECIMAL") or line.startswith("---") or not line.strip():
+                self._debug(f"Skipping header/empty: {line[:60]}")
                 continue
 
             # Detect filesystem type
@@ -331,8 +399,14 @@ class FirmwareExtractor:
                 fs_type = FilesystemType.CPIO
             elif any(x in line_lower for x in ["gzip", "lzma", "xz compressed", "xz data"]):
                 fs_type = FilesystemType.COMPRESSED
+            # Also check for raw filesystem/partition types
+            elif "ext2" in line_lower or "ext3" in line_lower or "ext4" in line_lower:
+                self._debug(f"Found EXT filesystem (not directly extractable): {line[:60]}")
+            elif "fat" in line_lower or "vfat" in line_lower:
+                self._debug(f"Found FAT filesystem: {line[:60]}")
 
             if fs_type:
+                self._debug(f"Found {fs_type.value}: {line[:80]}")
                 parts = line.split()
                 offset = None
                 size = None
@@ -433,6 +507,8 @@ class FirmwareExtractor:
 
     async def _extract_filesystem(self, fs: FilesystemEntry) -> bool:
         """Extract a specific filesystem based on type"""
+        self._debug(f"Extracting filesystem: type={fs.fs_type.value}, offset=0x{fs.offset:X}, size={fs.size}")
+
         handlers = {
             FilesystemType.SQUASHFS: self._extract_squashfs,
             FilesystemType.JFFS2: self._extract_jffs2,
@@ -443,7 +519,16 @@ class FirmwareExtractor:
 
         handler = handlers.get(fs.fs_type)
         if handler:
-            return await handler(fs)
+            self._debug(f"Using handler: {handler.__name__}")
+            result = await handler(fs)
+            self._debug(f"Handler result: {result}")
+            if fs.extract_path:
+                self._debug(f"Extract path: {fs.extract_path}")
+                if fs.extract_path.exists():
+                    file_count = sum(1 for _ in fs.extract_path.rglob("*") if _.is_file())
+                    dir_count = sum(1 for _ in fs.extract_path.rglob("*") if _.is_dir())
+                    self._debug(f"Extracted: {file_count} files, {dir_count} directories")
+            return result
         else:
             self._log(f"[!] No handler for {fs.fs_type.value}")
             return False
@@ -527,6 +612,8 @@ class FirmwareExtractor:
 
     async def _extract_squashfs(self, fs: FilesystemEntry) -> bool:
         """Extract SquashFS filesystem"""
+        self._debug(f"Starting SquashFS extraction at offset 0x{fs.offset:X}")
+
         # Determine actual size from superblock
         actual_size = self._find_squashfs_size(fs.offset)
         if actual_size:
@@ -534,50 +621,81 @@ class FirmwareExtractor:
             size = actual_size
         elif fs.size:
             size = fs.size
+            self._debug(f"Using provided size: {size:,} bytes")
         else:
             size = self.firmware_path.stat().st_size - fs.offset
+            self._debug(f"Using remaining file size: {size:,} bytes")
 
         # Carve the squashfs image
         carved_path = self.output_dir / f"squashfs_0x{fs.offset:X}.img"
+        self._debug(f"Carving to: {carved_path}")
+
         if not self._carve_data(fs.offset, size, carved_path):
+            self._log("[!] Failed to carve SquashFS data")
             return False
+
+        self._debug(f"Carved file size: {carved_path.stat().st_size:,} bytes")
+
+        # Verify carved file has squashfs magic
+        with open(carved_path, 'rb') as f:
+            magic = f.read(4)
+        self._debug(f"Carved file magic: {magic.hex()}")
 
         extract_dir = self.output_dir / f"squashfs-root_0x{fs.offset:X}"
         fs.extract_path = extract_dir
 
         # Try sasquatch first (handles vendor-modified squashfs)
         if self._tools.get("sasquatch"):
-            success, _, err = await self._run_cmd(
+            self._debug("Trying sasquatch...")
+            # Create extract dir first
+            extract_dir.mkdir(parents=True, exist_ok=True)
+
+            success, stdout, err = await self._run_cmd(
                 ["sasquatch", "-f", "-d", str(extract_dir), str(carved_path)],
                 "Extracting with sasquatch"
             )
-            if success:
+            self._debug(f"sasquatch result: success={success}")
+            if success or extract_dir.exists():
                 file_count = len([f for f in extract_dir.rglob("*") if f.is_file()])
+                dir_count = len([f for f in extract_dir.rglob("*") if f.is_dir()])
+                self._debug(f"sasquatch extracted: {file_count} files, {dir_count} dirs")
                 if file_count > 0:
                     self._log(f"[+] SquashFS extracted {file_count} files")
                     carved_path.unlink(missing_ok=True)
                     return True
                 else:
-                    self._log("[!] sasquatch succeeded but no files extracted")
-            if "unknown" not in err.lower():
-                self._log(f"[!] sasquatch error: {err[:100]}")
+                    self._debug("sasquatch succeeded but no files - trying unsquashfs")
+            if err and "unknown" not in err.lower():
+                self._debug(f"sasquatch stderr: {err[:200]}")
 
         # Fallback to standard unsquashfs
         if self._tools.get("unsquashfs"):
-            success, _, err = await self._run_cmd(
+            self._debug("Trying unsquashfs...")
+            # Clean up any partial extraction
+            if extract_dir.exists():
+                shutil.rmtree(extract_dir, ignore_errors=True)
+
+            success, stdout, err = await self._run_cmd(
                 ["unsquashfs", "-f", "-d", str(extract_dir), str(carved_path)],
                 "Extracting with unsquashfs"
             )
-            if success:
+            self._debug(f"unsquashfs result: success={success}")
+            if success or extract_dir.exists():
                 file_count = len([f for f in extract_dir.rglob("*") if f.is_file()])
+                dir_count = len([f for f in extract_dir.rglob("*") if f.is_dir()])
+                self._debug(f"unsquashfs extracted: {file_count} files, {dir_count} dirs")
                 if file_count > 0:
                     self._log(f"[+] SquashFS extracted {file_count} files")
                     carved_path.unlink(missing_ok=True)
                     return True
                 else:
                     self._log("[!] unsquashfs succeeded but no files extracted")
-            self._log(f"[!] unsquashfs error: {err[:100]}")
+            if err:
+                self._debug(f"unsquashfs stderr: {err[:200]}")
+                self._log(f"[!] unsquashfs error: {err[:100]}")
 
+        # Keep carved file for manual inspection
+        self._log(f"[!] Extraction failed - carved file kept at: {carved_path}")
         return False
 
     async def _extract_jffs2(self, fs: FilesystemEntry) -> bool:
