@@ -5,6 +5,7 @@ Full-featured panel for Bus Pirate 5/6 devices.
 Supports: SPI, I2C, UART, 1-Wire, JTAG/SWD scanning, Logic Analyzer, ADC, PWM
 """
 
+import asyncio
 from typing import List, Optional
 from dataclasses import dataclass
 
@@ -834,7 +835,7 @@ Available commands:
         elif button_id == "btn-pwm-stop":
             await self._stop_pwm()
         elif button_id == "btn-freq-measure":
-            self.log_output("[*] Frequency measurement not implemented yet")
+            await self._measure_frequency()
 
         # Pinout refresh buttons
         elif button_id in ("spi-refresh-pinout", "i2c-refresh-pinout", "uart-refresh-pinout"):
@@ -1409,14 +1410,94 @@ Available commands:
         self.log_output("[*] Use command: spi dump <filename>")
 
     async def _spi_erase_flash(self) -> None:
-        """Erase SPI flash"""
-        self.log_output("[*] SPI erase not yet implemented")
-        self.log_output("[!] This is a destructive operation - use with caution")
+        """Erase SPI flash sector or chip"""
+        if not self._backend:
+            self.log_output("[!] Not connected")
+            return
+
+        try:
+            # Ensure we're in SPI mode
+            if self.current_mode != "SPI":
+                await self._change_mode("SPI")
+
+            self.log_output("[!] WARNING: This will erase flash data!")
+            self.log_output("[*] Erasing 4KB sector at address 0x000000...")
+
+            # Progress callback
+            def progress(msg):
+                self.log_output(f"[*] {msg}")
+
+            # Run erase in executor to not block UI
+            loop = asyncio.get_event_loop()
+            success = await loop.run_in_executor(
+                None,
+                lambda: self._backend.spi_flash_erase(
+                    address=0,
+                    erase_type="sector",
+                    progress_callback=progress
+                )
+            )
+
+            if success:
+                self.log_output("[+] Sector erase complete")
+            else:
+                self.log_output("[!] Erase failed")
+
+        except Exception as e:
+            self.log_output(f"[!] SPI erase error: {e}")
 
     async def _spi_write_flash(self) -> None:
-        """Write to SPI flash"""
-        self.log_output("[*] SPI write not yet implemented")
-        self.log_output("[!] This is a destructive operation - use with caution")
+        """Write data to SPI flash from file"""
+        if not self._backend:
+            self.log_output("[!] Not connected")
+            return
+
+        try:
+            # Ensure we're in SPI mode
+            if self.current_mode != "SPI":
+                await self._change_mode("SPI")
+
+            # For now, write test pattern to first 256 bytes
+            self.log_output("[!] WARNING: This will overwrite flash data!")
+            self.log_output("[*] Writing test pattern to address 0x000000...")
+
+            # Create test data (256 bytes incrementing pattern)
+            test_data = bytes(range(256))
+
+            # Progress callback
+            def progress(written, total):
+                pct = (written / total) * 100 if total > 0 else 0
+                self.log_output(f"[*] Progress: {written}/{total} bytes ({pct:.0f}%)")
+                return True  # Continue
+
+            # Run write in executor
+            loop = asyncio.get_event_loop()
+            success = await loop.run_in_executor(
+                None,
+                lambda: self._backend.spi_flash_write(
+                    address=0,
+                    data=test_data,
+                    progress_callback=progress
+                )
+            )
+
+            if success:
+                self.log_output("[+] Write complete")
+                # Verify by reading back
+                self.log_output("[*] Verifying...")
+                verify_data = await loop.run_in_executor(
+                    None,
+                    lambda: self._backend.spi_flash_read(0, 256)
+                )
+                if verify_data == test_data:
+                    self.log_output("[+] Verification passed")
+                else:
+                    self.log_output("[!] Verification FAILED - data mismatch")
+            else:
+                self.log_output("[!] Write failed")
+
+        except Exception as e:
+            self.log_output(f"[!] SPI write error: {e}")
 
     # --------------------------------------------------------------------------
     # I2C Operations
@@ -1584,11 +1665,89 @@ Available commands:
 
     async def _start_pwm(self) -> None:
         """Start PWM output"""
-        self.log_output("[*] PWM output not yet implemented via BPIO2")
+        if not self._backend:
+            self.log_output("[!] Not connected")
+            return
+
+        try:
+            # Get frequency and duty cycle from UI inputs if available
+            freq_str = self._get_input_value("pwm-freq", "1000")
+            duty_str = self._get_input_value("pwm-duty", "50")
+
+            frequency = int(freq_str)
+            duty_cycle = float(duty_str)
+
+            self.log_output(f"[*] Starting PWM: {frequency}Hz, {duty_cycle}% duty cycle...")
+
+            # Run in executor
+            loop = asyncio.get_event_loop()
+            success = await loop.run_in_executor(
+                None,
+                lambda: self._backend.pwm_start(frequency, duty_cycle)
+            )
+
+            if success:
+                self.log_output(f"[+] PWM started on AUX pin")
+            else:
+                self.log_output("[!] PWM start failed")
+
+        except ValueError as e:
+            self.log_output(f"[!] Invalid PWM parameters: {e}")
+        except Exception as e:
+            self.log_output(f"[!] PWM error: {e}")
 
     async def _stop_pwm(self) -> None:
         """Stop PWM output"""
-        self.log_output("[*] PWM stop not yet implemented via BPIO2")
+        if not self._backend:
+            self.log_output("[!] Not connected")
+            return
+
+        try:
+            self.log_output("[*] Stopping PWM...")
+
+            loop = asyncio.get_event_loop()
+            success = await loop.run_in_executor(
+                None,
+                lambda: self._backend.pwm_stop()
+            )
+
+            if success:
+                self.log_output("[+] PWM stopped")
+            else:
+                self.log_output("[!] PWM stop failed")
+
+        except Exception as e:
+            self.log_output(f"[!] PWM stop error: {e}")
+
+    async def _measure_frequency(self) -> None:
+        """Measure frequency on input pin"""
+        if not self._backend:
+            self.log_output("[!] Not connected")
+            return
+
+        try:
+            self.log_output("[*] Measuring frequency on AUX pin...")
+            self.log_output("[*] Connect signal to AUX pin and wait...")
+
+            # Run in executor
+            loop = asyncio.get_event_loop()
+            freq = await loop.run_in_executor(
+                None,
+                lambda: self._backend.frequency_measure(timeout_ms=3000)
+            )
+
+            if freq is not None:
+                if freq >= 1_000_000:
+                    self.log_output(f"[+] Frequency: {freq / 1_000_000:.3f} MHz")
+                elif freq >= 1000:
+                    self.log_output(f"[+] Frequency: {freq / 1000:.3f} kHz")
+                else:
+                    self.log_output(f"[+] Frequency: {freq} Hz")
+            else:
+                self.log_output("[!] No signal detected or measurement timeout")
+
+        except Exception as e:
+            self.log_output(f"[!] Frequency measurement error: {e}")
 
     # --------------------------------------------------------------------------
     # Status Display Functions
