@@ -35,6 +35,7 @@ from .panels.tilink import TILinkPanel
 from .panels.blackmagic import BlackMagicPanel
 from .panels.uart_monitor import UARTMonitorPanel
 from .panels.firmware import FirmwarePanel
+from .panels.calibration import CalibrationPanel
 from .panels.base import DeviceOutputMessage
 
 
@@ -175,6 +176,7 @@ class HwhApp(App):
         Binding("f2", "show_firmware", "Firmware"),
         Binding("f3", "toggle_split", "Split"),
         Binding("f4", "show_coordination", "Coordination"),
+        Binding("f6", "show_calibration", "Calibration"),
         Binding("escape", "show_devices", "Discovery"),
         Binding("f12", "show_help", "Help"),
     ]
@@ -198,6 +200,10 @@ class HwhApp(App):
             # Firmware analysis tab - always present, no device needed
             with TabPane("Firmware", id="tab-firmware"):
                 yield FirmwarePanel(id="firmware-panel")
+
+            # Calibration tab - for glitch timing calibration
+            with TabPane("Calibration", id="tab-calibration"):
+                yield CalibrationPanel(app=self, id="calibration-panel")
 
         # Footer with version
         with Horizontal(id="app-footer"):
@@ -239,6 +245,11 @@ class HwhApp(App):
         """Switch to firmware analysis tab"""
         tabs = self.query_one("#main-tabs", TabbedContent)
         tabs.active = "tab-firmware"
+
+    async def action_show_calibration(self) -> None:
+        """Switch to calibration tab"""
+        tabs = self.query_one("#main-tabs", TabbedContent)
+        tabs.active = "tab-calibration"
 
     async def action_show_coordination(self) -> None:
         """Show coordination panel for multi-device operations"""

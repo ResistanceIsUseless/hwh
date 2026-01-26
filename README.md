@@ -95,6 +95,7 @@ hwh glitch sweep --device "Curious Bolt" --width 100-500 --offset 0-1000
 | `F2` | Go to Firmware tab |
 | `F3` | Toggle split view |
 | `F4` | Coordination mode (multi-device) |
+| `F6` | Calibration (glitch timing) |
 | `F12` | Show help |
 | `Escape` | Back to device discovery |
 | `q` | Quit |
@@ -157,6 +158,48 @@ Route events from one device to actions on another:
 4. Click "Add Route" to create UART→glitch route
 5. Click "ARM COORDINATOR" to start monitoring
 6. Glitch triggers automatically when pattern detected
+
+## Glitch Calibration
+
+Press `F6` to access the Calibration tab for measuring and compensating glitch timing latency.
+
+### Why Calibrate?
+Different setups have different latencies due to:
+- Wire length between devices
+- Hardware variations
+- Connection quality
+
+Calibration measures your setup's exact timing so you can:
+- Share glitch parameters with others
+- Apply shared parameters to your setup with automatic compensation
+
+### Calibration Workflow
+1. Connect your glitch device (e.g., Curious Bolt)
+2. Wire the glitch output to a logic analyzer input (loopback)
+3. Select your device in the Calibration tab
+4. Enter a profile name (e.g., "bolt_10cm_wire")
+5. Click "Start Calibration"
+6. Save the profile for future use
+
+### Wiring Example (Curious Bolt)
+```
+    GLITCH OUT ──────┐
+                     │ (short wire)
+    LA CH0     ◄─────┘
+```
+
+### Portable Glitch Configs
+```python
+from hwh.automation import PortableGlitchConfig, CalibrationManager
+
+# Load a shared config
+config = PortableGlitchConfig.load("stm32_rdp_bypass.json")
+
+# Apply your local calibration
+manager = CalibrationManager()
+width, offset = manager.apply_calibration(config, "my_bolt_10cm_wire")
+print(f"Adjusted: width={width}ns, offset={offset}ns")
+```
 
 ## Automation Tools
 

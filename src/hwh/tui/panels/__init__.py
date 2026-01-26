@@ -15,6 +15,7 @@ from .blackmagic import BlackMagicPanel
 from .uart_monitor import UARTMonitorPanel
 from .logic_analyzer import LogicAnalyzerWidget
 from .firmware import FirmwarePanel
+from .calibration import CalibrationPanel
 
 __all__ = [
     "DevicePanel",
@@ -28,4 +29,5 @@ __all__ = [
     "UARTMonitorPanel",
     "LogicAnalyzerWidget",
     "FirmwarePanel",
+    "CalibrationPanel",
 ]
