@@ -81,10 +81,15 @@ hwh devices
 hwh connect "Bus Pirate 5"
 
 # Read SPI flash
-hwh spi read --device "Bus Pirate 5" --output dump.bin
+hwh spi dump --device "Bus Pirate 5" --output dump.bin
 
 # Run glitch sweep
 hwh glitch sweep --device "Curious Bolt" --width 100-500 --offset 0-1000
+
+# Firmware extraction and analysis
+hwh firmware extract firmware.bin           # Extract filesystems
+hwh firmware analyze extracted_dir/         # Analyze for vulnerabilities
+hwh firmware analyze path/ --export md -o report.md  # Generate markdown report
 ```
 
 ### Keyboard Shortcuts (TUI)
@@ -107,13 +112,17 @@ The Firmware tab (F2) provides tools for analyzing firmware images without requi
 
 ### Features
 - **Extraction** - Scan and extract SquashFS, JFFS2, UBIFS, CPIO, TAR, ZIP filesystems
-- **Nested Archives** - Automatically extract archives within archives
+- **Nested Archives** - Automatically extract archives within archives (including uImage)
 - **File Browser** - Navigate extracted filesystem with lazy-loading tree view
 - **Raw Image Support** - Load .img files directly (auto-detects filesystem type)
-- **Security Search** - Find hardcoded credentials, API keys, private keys
-- **Binary Analysis** - Detect unsafe functions in ELF binaries
+- **Security Search** - Find hardcoded credentials, API keys, private keys, backdoors
+- **Binary Analysis** - Detect unsafe functions in ELF binaries, identify custom binaries for Ghidra
+- **Service Detection** - Identify running services (systemd, init.d, xinetd)
+- **Software Inventory** - Detect installed packages (opkg, dpkg, rpm) with version info
+- **Privilege Escalation** - LinPEAS-style checks (SUID/SGID, sudo config, weak permissions)
+- **Scheduled Tasks** - Analyze cron jobs and startup scripts
 - **Pattern Search** - Custom regex search across all files
-- **Findings Export** - Export results to TXT, JSON, or CSV
+- **Findings Export** - Export results to TXT, JSON, CSV, or Markdown
 
 ### Dependencies
 ```bash
@@ -124,11 +133,14 @@ brew install binwalk
 brew install sasquatch squashfs-tools
 pip install jefferson ubi_reader
 
+# Optional for enhanced scanning
+brew install nuclei  # Vulnerability scanner
+
 # For archive support
 # tar and unzip are usually pre-installed
 ```
 
-### Commands
+### TUI Commands (in Firmware panel)
 ```
 load <path>     - Load firmware file or directory
 browse          - Open file browser for extracted files
@@ -137,8 +149,28 @@ extract         - Extract all filesystems
 analyze         - Run full security scan
 creds           - Scan for credentials only
 search <regex>  - Search with custom pattern
-export [format] - Export findings (txt/json/csv)
+export [format] - Export findings (txt/json/csv/md)
 debug           - Toggle debug logging
+```
+
+### CLI Examples
+```bash
+# Extract firmware
+hwh firmware extract router.bin
+# Output: router_extracted/
+
+# Analyze extracted filesystem
+hwh firmware analyze router_extracted/squashfs-root/
+
+# Generate comprehensive markdown report
+hwh firmware analyze router_extracted/squashfs-root/ \
+  --export md -o security-report.md
+
+# Verbose output for debugging
+hwh firmware analyze path/ -v
+
+# Export as JSON for automation
+hwh firmware analyze path/ --export json -o findings.json
 ```
 
 ## Coordination Mode
