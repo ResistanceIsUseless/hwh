@@ -394,7 +394,7 @@ class CalibrationPanel(Container):
             calibrator = GlitchCalibrator(
                 glitch_backend=glitch_backend,
                 la_backend=la_backend,
-                la_channel=0,  # CH0 for loopback
+                glitch_output_channel=0,  # CH0 for loopback
                 log_callback=self._log
             )
 
