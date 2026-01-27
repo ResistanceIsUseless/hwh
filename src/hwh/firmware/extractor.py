@@ -68,13 +68,19 @@ class FirmwareExtractor:
     Supports both binwalk v2.x (-B flag) and v3.x (no flag) CLI interfaces.
     """
 
-    def __init__(self, progress_callback: Optional[Callable[[str], None]] = None):
+    def __init__(self, progress_callback: Optional[Callable[[str], None]] = None, recursion_depth: int = 0):
         self.progress_callback = progress_callback
         self.firmware_path: Optional[Path] = None
         self.output_dir: Optional[Path] = None
         self.filesystems: List[FilesystemEntry] = []
         self._tools: Dict[str, Optional[str]] = {}
         self._binwalk_version: Optional[int] = None  # 2 or 3
+        self._recursion_depth = recursion_depth  # Track nested extraction depth
+        self._max_recursion = 3  # Maximum nested extraction levels
+        self._extracted_files: Set[Path] = set()  # Track already extracted files to prevent loops
+
+        # Check for required tools on initialization
+        self.check_dependencies()
 
     def _log(self, message: str) -> None:
         """Log a message via callback"""
@@ -420,13 +426,20 @@ class FirmwareExtractor:
                 size = None
 
                 if version == 3:
-                    # v3 format: 0x00000000    65536   squashfs    description
-                    if parts and parts[0].startswith("0x"):
+                    # v3 format: DECIMAL    HEXADECIMAL    DESCRIPTION
+                    # Line: "220    0xDC    ZIP archive, file count: 8, total size: 6696737 bytes"
+                    if parts and parts[0].isdigit():
                         try:
-                            offset = int(parts[0], 16)
-                            # Second field might be size
-                            if len(parts) > 1 and parts[1].isdigit():
-                                size = int(parts[1])
+                            offset = int(parts[0])
+                            # Look for size in description (e.g., "total size: 6696737 bytes")
+                            if "size:" in line_lower:
+                                for j, part in enumerate(parts):
+                                    if part.lower() == "size:" and j + 1 < len(parts):
+                                        try:
+                                            size_str = parts[j + 1].replace(",", "")
+                                            size = int(size_str)
+                                        except ValueError:
+                                            pass
                         except ValueError:
                             pass
                 else:
@@ -719,6 +732,9 @@ class FirmwareExtractor:
         carved_path = self.output_dir / f"jffs2_0x{fs.offset:X}.img"
         self._carve_data(fs.offset, size, carved_path)
 
+        # Mark as extracted to prevent re-extraction
+        self._extracted_files.add(carved_path.resolve())
+
         extract_dir = self.output_dir / f"jffs2-root_0x{fs.offset:X}"
         extract_dir.mkdir(parents=True, exist_ok=True)
         fs.extract_path = extract_dir
@@ -728,18 +744,19 @@ class FirmwareExtractor:
             "Extracting JFFS2 with jefferson"
         )
 
+        # Always clean up carved file immediately after extraction attempt
+        carved_path.unlink(missing_ok=True)
+
         # Check if files were actually extracted
         extracted_files = list(extract_dir.rglob("*"))
         file_count = len([f for f in extracted_files if f.is_file()])
 
         if file_count > 0:
             self._log(f"[+] JFFS2 extracted {file_count} files")
-            carved_path.unlink(missing_ok=True)
             return True
         else:
             self._log("[!] JFFS2 extraction produced no files")
             self._log("[*] This may not be a valid JFFS2 filesystem")
-            # Keep the carved file for manual inspection
             return False
 
     async def _extract_ubifs(self, fs: FilesystemEntry) -> bool:
@@ -825,18 +842,27 @@ class FirmwareExtractor:
         if success:
             # Scan decompressed output for nested filesystems
             decompressed = carved_path.with_suffix("")
-            if decompressed.exists():
+            if decompressed.exists() and decompressed.stat().st_size > 0:
                 self._log("[*] Scanning decompressed data...")
                 # Create sub-extractor for nested content
-                sub_extractor = FirmwareExtractor(self.progress_callback)
+                sub_extractor = FirmwareExtractor(self.progress_callback, self._recursion_depth + 1)
                 sub_extractor._tools = self._tools
+                sub_extractor._binwalk_version = self._binwalk_version
                 await sub_extractor.load_firmware(str(decompressed))
                 nested = await sub_extractor.scan()
 
-                for nested_fs in nested:
-                    await sub_extractor._extract_filesystem(nested_fs)
-                    if nested_fs.extract_path:
-                        fs.extract_path = nested_fs.extract_path
+                # Filter out any "compressed" detections to prevent infinite recursion
+                nested = [n for n in nested if n.fs_type != FilesystemType.COMPRESSED]
+
+                if nested:
+                    for nested_fs in nested:
+                        await sub_extractor._extract_filesystem(nested_fs)
+                        if nested_fs.extract_path:
+                            fs.extract_path = nested_fs.extract_path
+                else:
+                    # No nested filesystems - the decompressed file itself is the result
+                    self._log(f"[*] Decompressed file is not a filesystem, keeping as-is")
+                    fs.extract_path = decompressed.parent
 
         return True
 
@@ -914,6 +940,10 @@ class FirmwareExtractor:
 
     async def _scan_extracted_for_filesystems(self, extract_dir: Path) -> None:
         """Scan extracted archive contents for nested filesystem images"""
+        if self._recursion_depth >= self._max_recursion:
+            self._log(f"[!] Max recursion depth ({self._max_recursion}) reached, skipping nested scan")
+            return
+
         self._log("[*] Scanning extracted contents for filesystem images...")
 
         # Look for .img, .squashfs, .jffs2, .bin files
@@ -921,6 +951,16 @@ class FirmwareExtractor:
 
         for item in extract_dir.rglob("*"):
             if not item.is_file():
+                continue
+
+            # Skip if in an already-extracted directory (prevent infinite loops)
+            if any("_extracted" in p.name for p in item.parents):
+                self._debug(f"Skipping file in _extracted directory: {item.name}")
+                continue
+
+            # Skip if we've already extracted this file
+            if item.resolve() in self._extracted_files:
+                self._debug(f"Skipping already-extracted file: {item.name}")
                 continue
 
             suffix = item.suffix.lower()
@@ -933,7 +973,86 @@ class FirmwareExtractor:
                         magic = f.read(16)
 
                     fs_type = None
-                    if magic[:4] in (b"hsqs", b"sqsh", b"shsq", b"qshs"):
+
+                    # Check for u-boot uImage wrapper (0x27051956 magic)
+                    if magic[:4] == b"\x27\x05\x19\x56":
+                        self._log(f"[+] Found u-boot uImage: {item.name}")
+                        # u-boot uImage has 64-byte header, extract payload
+                        # Header structure: 64 bytes total
+                        # Offset 2: compression type (1=none, 2=gzip, 3=bzip2)
+                        # Offset 12-15: data size (big-endian)
+                        # Payload starts at offset 64
+
+                        # Mark as extracted to prevent re-extraction
+                        self._extracted_files.add(item.resolve())
+
+                        try:
+                            with open(item, 'rb') as f:
+                                header = f.read(64)
+                                compression_type = header[31]  # Byte 31: compression type
+                                data_size = int.from_bytes(header[12:16], 'big')
+                                payload = f.read(data_size)
+
+                            # Write payload to new file
+                            payload_path = item.with_suffix(item.suffix + '.payload')
+                            with open(payload_path, 'wb') as f:
+                                f.write(payload)
+
+                            self._log(f"[*] Extracted {len(payload):,} byte payload from uImage (compression={compression_type})")
+
+                            # Check if payload is compressed
+                            if compression_type == 1:  # gzip (0=none, 1=gzip, 2=bzip2)
+                                self._log(f"[*] uImage payload is gzip compressed, decompressing...")
+                                import gzip
+                                decompressed_path = payload_path.with_suffix('.decompressed')
+                                try:
+                                    with gzip.open(payload_path, 'rb') as gz:
+                                        decompressed = gz.read()
+                                    with open(decompressed_path, 'wb') as f:
+                                        f.write(decompressed)
+                                    self._log(f"[*] Decompressed {len(decompressed):,} bytes")
+                                    payload_path.unlink()
+                                    payload_path = decompressed_path
+                                except Exception as e:
+                                    self._log(f"[!] Gzip decompression failed: {e}")
+                            elif compression_type == 2:  # bzip2
+                                self._log(f"[*] uImage payload is bzip2 compressed, decompressing...")
+                                import bz2
+                                decompressed_path = payload_path.with_suffix('.decompressed')
+                                try:
+                                    with bz2.open(payload_path, 'rb') as bz:
+                                        decompressed = bz.read()
+                                    with open(decompressed_path, 'wb') as f:
+                                        f.write(decompressed)
+                                    self._log(f"[*] Decompressed {len(decompressed):,} bytes")
+                                    payload_path.unlink()
+                                    payload_path = decompressed_path
+                                except Exception as e:
+                                    self._log(f"[!] Bzip2 decompression failed: {e}")
+
+                            # Now scan the payload for filesystems
+                            sub_extractor = FirmwareExtractor(self.progress_callback, self._recursion_depth + 1)
+                            sub_extractor._tools = self._tools
+                            sub_extractor._binwalk_version = self._binwalk_version
+                            sub_extractor._extracted_files = self._extracted_files
+
+                            if await sub_extractor.load_firmware(str(payload_path)):
+                                # Scan the payload
+                                await sub_extractor.scan()
+                                if sub_extractor.filesystems:
+                                    self._log(f"[*] Extracting nested filesystem(s) from payload...")
+                                    result = await sub_extractor.extract_all()
+                                    if result.success:
+                                        self._log(f"[+] Extracted {result.total_files} files from {item.name}")
+                                # Clean up payload file
+                                payload_path.unlink(missing_ok=True)
+                        except Exception as e:
+                            self._log(f"[!] Failed to extract uImage payload: {e}")
+
+                        continue  # Skip the rest of this iteration
+
+                    # Direct filesystem detection
+                    elif magic[:4] in (b"hsqs", b"sqsh", b"shsq", b"qshs"):
                         fs_type = FilesystemType.SQUASHFS
                         self._log(f"[+] Found SquashFS image: {item.name}")
                     elif magic[:2] in (b"\x85\x19", b"\x19\x85"):
@@ -944,10 +1063,19 @@ class FirmwareExtractor:
                         self._log(f"[+] Found CPIO archive: {item.name}")
 
                     if fs_type:
+                        # Skip if already extracted
+                        if item.resolve() in self._extracted_files:
+                            self._debug(f"Skipping already-extracted filesystem: {item.name}")
+                            continue
+
+                        # Mark as extracted
+                        self._extracted_files.add(item.resolve())
+
                         # Create a sub-extractor for this image
-                        sub_extractor = FirmwareExtractor(self.progress_callback)
+                        sub_extractor = FirmwareExtractor(self.progress_callback, self._recursion_depth + 1)
                         sub_extractor._tools = self._tools
                         sub_extractor._binwalk_version = self._binwalk_version
+                        sub_extractor._extracted_files = self._extracted_files
 
                         if await sub_extractor.load_firmware(str(item)):
                             # If load detected the filesystem, extract it

@@ -26,8 +26,15 @@ ruff check src/
 # Type checking
 mypy src/
 
-# Test BPIO2 connection (Bus Pirate 5/6)
-python scripts/test_bpio2_status.py /dev/cu.usbmodem6buspirate3
+# CLI Commands
+hwh devices                    # List connected devices
+hwh spi dump -d "Bus Pirate 5" -o dump.bin  # Dump SPI flash
+hwh glitch sweep --device "Curious Bolt" --width 100-500  # Glitch sweep
+
+# Debug Scripts
+python scripts/test_bpio2_status.py /dev/cu.usbmodem6buspirate3  # Test BPIO2 connection
+python scripts/test_bp_sump.py /dev/cu.usbmodem6buspirate3       # Test logic analyzer
+python scripts/debug_startup.py                                   # Debug TUI startup
 ```
 
 ## Architecture
@@ -45,6 +52,8 @@ src/hwh/
 │   ├── backend_tigard.py  # Tigard backend
 │   ├── backend_stlink.py  # ST-Link backend
 │   ├── backend_blackmagic.py # Black Magic Probe backend
+│   ├── backend_tilink.py  # TI-Link backend (MSP-FET, XDS)
+│   ├── backend_faultycat.py # FaultyCat EMFI glitcher backend
 │   └── sump.py            # SUMP protocol for logic analyzers
 ├── pybpio/                # Bundled BPIO2 FlatBuffers library for Bus Pirate 5/6
 │   ├── bpio_client.py     # BPIOClient class (serial + COBS + FlatBuffers)
@@ -69,7 +78,12 @@ src/hwh/
 │       ├── buspirate.py   # Bus Pirate panel (SPI, I2C, UART, Protocol modes)
 │       ├── bolt.py        # Curious Bolt panel (glitching, power analysis)
 │       ├── tigard.py      # Tigard panel
-│       ├── firmware.py    # Firmware analysis panel
+│       ├── stlink.py      # ST-Link panel
+│       ├── blackmagic.py  # Black Magic Probe panel
+│       ├── tilink.py      # TI-Link panel
+│       ├── faultycat.py   # FaultyCat panel
+│       ├── firmware.py    # Firmware analysis panel (F2)
+│       ├── calibration.py # Glitch calibration panel (F6)
 │       ├── logic_analyzer.py # Logic analyzer widget (SUMP waveforms)
 │       └── uart_monitor.py   # Generic UART monitor panel
 └── workflows/             # Multi-device coordinated workflows
@@ -157,9 +171,37 @@ Example: Glitch STM32 while monitoring UART for success condition.
 ### Firmware Analysis
 
 Pipeline in `firmware/`:
-- **`extractor.py`**: Binwalk integration for filesystem extraction (SquashFS, JFFS2, UBIFS, CPIO)
+- **`extractor.py`**: Binwalk integration for filesystem extraction (SquashFS, JFFS2, UBIFS, CPIO, TAR, ZIP)
 - **`analyzer.py`**: Security scanning (credentials, hardcoded keys, unsafe functions in ELF binaries)
 - **`patterns.py`**: Regex patterns for vulnerability detection
+
+**Firmware Panel (F2)** provides:
+- Load firmware files (.bin, .img) or extracted directories
+- Automatic filesystem detection and extraction
+- Nested archive handling (archives within archives)
+- Lazy-loading file browser for large filesystems
+- Security pattern search (credentials, API keys, private keys, backdoors)
+- Binary analysis (unsafe functions, buffer overflows)
+- Export findings to TXT, JSON, or CSV
+
+**Commands** (in Firmware panel):
+```
+load <path>     - Load firmware file or directory
+browse          - Open file browser
+scan            - Scan for filesystems
+extract         - Extract all filesystems
+analyze         - Run full security scan
+creds           - Scan for credentials only
+search <regex>  - Custom pattern search
+export [format] - Export findings (txt/json/csv)
+debug           - Toggle debug logging
+```
+
+**Dependencies** (optional but recommended):
+```bash
+brew install binwalk sasquatch squashfs-tools
+pip install jefferson ubi_reader
+```
 
 ## TUI Key Bindings
 
@@ -170,9 +212,108 @@ Pipeline in `firmware/`:
 | `F3` | Toggle split view |
 | `F4` | Coordination view (multi-device) |
 | `F5` | Refresh devices |
+| `F6` | Glitch calibration tab (experimental) |
 | `F12` | Show help |
-| `Ctrl+Q` | Quit |
+| `Ctrl+Q` / `q` | Quit |
+| `Tab` | Switch between panels |
 | `Escape` | Return to discovery tab |
+
+### Coordination Mode (F4)
+
+Multi-device trigger routing for coordinated attacks:
+
+**Trigger Sources**:
+- UART pattern detection (e.g., "Password:" detected → trigger glitch)
+- ADC threshold crossing (power spike → trigger action)
+- GPIO hardware triggers (sub-microsecond latency via physical wiring)
+
+**Workflow Example**:
+1. Connect Bus Pirate (UART monitor) + Curious Bolt (glitcher)
+2. Press F4 to open Coordination view
+3. Configure trigger: UART pattern "login:" → Bolt glitch
+4. Click "ARM COORDINATOR" to start monitoring
+5. Glitch triggers automatically when pattern detected in UART stream
+
+### Calibration Mode (F6)
+
+**Status**: Experimental - UI complete, hardware integration in progress
+
+**Purpose**: Measure and compensate for timing latency differences between hardware setups, enabling sharing of glitch parameters.
+
+**Workflow**:
+1. Connect glitch device (e.g., Curious Bolt)
+2. Wire glitch output to logic analyzer input (loopback)
+3. Press F6, select device, enter profile name
+4. Click "Start Calibration" to measure timing characteristics
+5. Save profile for future use
+
+**Future Goal**: Share glitch configs with calibration profiles:
+```python
+from hwh.automation import PortableGlitchConfig, CalibrationManager
+config = PortableGlitchConfig.load("stm32_rdp_bypass.json")
+manager = CalibrationManager()
+width, offset = manager.apply_calibration(config, "my_bolt_profile")
+```
+
+## CLI Usage
+
+The `hwh` command provides both TUI and CLI interfaces:
+
+### Launching TUI
+```bash
+hwh              # Launch TUI (default)
+hwh tui          # Explicit TUI launch
+```
+
+### Device Detection
+```bash
+hwh devices      # List connected devices (human-readable)
+hwh devices --json  # JSON output for scripting
+hwh devices --all   # Include unknown devices
+```
+
+### SPI Flash Operations
+```bash
+# Dump SPI flash
+hwh spi dump -d "Bus Pirate 5" -o dump.bin -a 0x0 -s 0x100000
+
+# Auto-select first SPI-capable device
+hwh spi dump -o dump.bin
+
+# Custom speed
+hwh spi dump -o dump.bin --speed 8000000
+```
+
+### Glitching Operations
+```bash
+# Run glitch parameter sweep
+hwh glitch sweep --device "Curious Bolt" \
+  --width 100-500 --offset 0-1000 --step 10
+
+# Single glitch test
+hwh glitch test --device "Curious Bolt" \
+  --width 350 --offset 500
+```
+
+### Automation Python API
+
+```python
+# UART Baud Scanner
+from hwh.automation import scan_uart_baud
+report = await scan_uart_baud(port="/dev/ttyUSB0")
+print(f"Detected: {report.best_baud} baud")
+
+# Smart Glitch Campaign
+from hwh.automation import SmartGlitchCampaign
+campaign = SmartGlitchCampaign(glitch_backend=bolt, monitor_backend=buspirate)
+campaign.classifier.add_success_pattern("flag{")
+stats = await campaign.run(strategy="adaptive", max_attempts=1000)
+
+# Firmware Analysis
+from hwh.automation import analyze_firmware
+report = await analyze_firmware("router.bin")
+print(report.summary())
+```
 
 ## Bus Pirate 5/6 Critical Notes
 
@@ -252,13 +393,115 @@ for delay in range(delay_min, delay_max, delay_step):
 
 ## Code Practices
 
+### General Guidelines
 - Type hints everywhere (Python 3.10+)
-- Async patterns for hardware I/O (Textual workers)
 - Dataclasses for configuration
 - Rich logging for debug output
 - Wrap all hardware operations in try/except with `serial.SerialException`, `usb.core.USBError`
 - Implement retry logic with exponential backoff
 - Always release hardware resources in finally blocks
+
+### Textual TUI Patterns
+
+**Worker Pattern for Hardware I/O**: CRITICAL - all serial/USB operations MUST run in workers to avoid blocking the UI:
+
+```python
+from textual.worker import work, get_current_worker
+
+@work(exclusive=True, thread=True)
+def serial_reader(self, port: str) -> None:
+    """Read from serial port in background thread."""
+    worker = get_current_worker()
+    ser = serial.Serial(port, 115200, timeout=0.1)
+    try:
+        while not worker.is_cancelled:
+            data = ser.read(1024)
+            if data:
+                # Use call_from_thread to safely update UI from worker
+                self.call_from_thread(self.handle_rx, data)
+    finally:
+        ser.close()
+```
+
+**Device Panel Pattern**: All device panels inherit from `DevicePanel` and declare capabilities:
+
+```python
+from .base import DevicePanel, PanelCapability
+
+class BusPiratePanel(DevicePanel):
+    CAPABILITIES = [
+        PanelCapability.SPI,
+        PanelCapability.I2C,
+        PanelCapability.UART,
+    ]
+
+    async def on_mount(self) -> None:
+        """Called when panel is added to DOM."""
+        backend = self.app.device_pool.get_backend(self.device_info)
+        if backend and backend.connect():
+            self._backend = backend
+```
+
+**Split View Pattern**: Use `SplitPanelMirror` to avoid duplicate connections:
+
+```python
+# SplitPanelMirror subscribes to DeviceOutputMessage events
+# from the source panel instead of opening a new serial connection
+mirror = SplitPanelMirror(device_info, source_panel=original_panel)
+```
+
+**Output Events**: Panels post `DeviceOutputMessage` for output mirroring:
+
+```python
+from .base import DeviceOutputMessage
+
+def handle_rx(self, data: bytes) -> None:
+    text = data.decode('utf-8', errors='replace')
+    self.log_widget.write(text)
+    # Notify any mirrors
+    self.post_message(DeviceOutputMessage(text=text))
+```
+
+### Backend Implementation Patterns
+
+**Backend Registration**: Use decorator to register backends:
+
+```python
+from ..backends import register_backend
+
+@register_backend("buspirate")
+class BusPirateBackend(BusBackend):
+    def connect(self) -> bool:
+        # Connection logic
+        pass
+```
+
+**Protocol Fallback**: Bus Pirate backend uses BPIO2 with terminal fallback:
+
+```python
+def configure_uart(self, config: UARTConfig) -> bool:
+    if self.bpio_client:
+        # Try BPIO2 first
+        try:
+            return self._configure_uart_bpio(config)
+        except NotImplementedError:
+            pass
+    # Fall back to terminal commands
+    return self._configure_uart_terminal(config)
+```
+
+**RP2040 Device Identification**: Bolt and FaultyCat share VID:PID, require runtime probing:
+
+```python
+# In detect.py
+if device.vid == 0x2E8A and device.pid == 0x000A:
+    # Probe serial to differentiate
+    device_type = _probe_rp2040_device(port)
+    if device_type == "bolt":
+        return DeviceInfo(name="Curious Bolt", device_type="bolt", ...)
+    elif device_type == "faultycat":
+        return DeviceInfo(name="FaultyCat", device_type="faultycat", ...)
+```
 
 ## Configuration
 

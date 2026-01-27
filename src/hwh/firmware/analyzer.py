@@ -25,62 +25,8 @@ from .patterns import (
     RISKY_SERVICE_PATTERNS,
     FINDING_SEVERITY,
 )
-
-
-class Severity(Enum):
-    """Finding severity levels"""
-    CRITICAL = "critical"
-    HIGH = "high"
-    MEDIUM = "medium"
-    LOW = "low"
-    INFO = "info"
-
-
-@dataclass
-class Finding:
-    """A security finding from analysis"""
-    severity: Severity
-    category: str
-    title: str
-    description: str
-    file_path: Optional[Path] = None
-    line_number: Optional[int] = None
-    matched_text: str = ""
-    pattern_name: str = ""
-
-    def __str__(self) -> str:
-        loc = ""
-        if self.file_path:
-            loc = f" in {self.file_path}"
-            if self.line_number:
-                loc += f":{self.line_number}"
-        return f"[{self.severity.value.upper()}] {self.title}{loc}"
-
-
-@dataclass
-class AnalysisResult:
-    """Complete analysis results"""
-    root_path: Path
-    findings: List[Finding] = field(default_factory=list)
-    files_scanned: int = 0
-    binaries_analyzed: int = 0
-    duration_seconds: float = 0.0
-
-    @property
-    def critical_count(self) -> int:
-        return sum(1 for f in self.findings if f.severity == Severity.CRITICAL)
-
-    @property
-    def high_count(self) -> int:
-        return sum(1 for f in self.findings if f.severity == Severity.HIGH)
-
-    @property
-    def medium_count(self) -> int:
-        return sum(1 for f in self.findings if f.severity == Severity.MEDIUM)
-
-    @property
-    def low_count(self) -> int:
-        return sum(1 for f in self.findings if f.severity == Severity.LOW)
+from .types import Finding, Severity, AnalysisResult
+from .analyzer_advanced import AdvancedAnalyzer
 
 
 class SecurityAnalyzer:
@@ -105,6 +51,7 @@ class SecurityAnalyzer:
         self.progress_callback = progress_callback
         self.findings: List[Finding] = []
         self._scanned_files: Set[Path] = set()
+        self._advanced = AdvancedAnalyzer(log_callback=self._log)
 
     def _log(self, message: str) -> None:
         """Log a message via callback"""
@@ -133,6 +80,12 @@ class SecurityAnalyzer:
         await self.find_interesting_files(root_path)
         await self.analyze_binaries(root_path)
         await self.check_permissions(root_path)
+        await self.analyze_services(root_path)
+        await self.analyze_software_versions(root_path)
+        await self.find_custom_binaries(root_path)
+        await self.analyze_scheduled_tasks(root_path)
+        await self.run_nuclei_scan(root_path)
+        await self.analyze_privilege_escalation(root_path)
 
         duration = time.time() - start_time
 
@@ -618,3 +571,316 @@ class SecurityAnalyzer:
                 ])
 
         return True
+
+    # Advanced analysis methods (delegated to AdvancedAnalyzer)
+
+    async def analyze_services(self, root_path: Path) -> List[Finding]:
+        """Analyze running services and daemons"""
+        findings = await self._advanced.analyze_services(root_path)
+        for finding in findings:
+            self.add_finding(finding)
+        return findings
+
+    async def analyze_software_versions(self, root_path: Path) -> List[Finding]:
+        """Detect installed software versions and check for CVEs"""
+        findings = await self._advanced.analyze_software_versions(root_path)
+        for finding in findings:
+            self.add_finding(finding)
+        return findings
+
+    async def find_custom_binaries(self, root_path: Path) -> List[Finding]:
+        """Identify custom/vendor binaries for further analysis in Ghidra"""
+        findings = await self._advanced.find_custom_binaries(root_path)
+        for finding in findings:
+            self.add_finding(finding)
+        return findings
+
+    async def analyze_scheduled_tasks(self, root_path: Path) -> List[Finding]:
+        """Analyze cron jobs and startup scripts"""
+        findings = await self._advanced.analyze_scheduled_tasks(root_path)
+        for finding in findings:
+            self.add_finding(finding)
+        return findings
+
+    async def run_nuclei_scan(self, root_path: Path) -> List[Finding]:
+        """Run nuclei scanner on extracted filesystem"""
+        findings = await self._advanced.run_nuclei_scan(root_path)
+        for finding in findings:
+            self.add_finding(finding)
+        return findings
+
+    async def analyze_privilege_escalation(self, root_path: Path) -> List[Finding]:
+        """LinPEAS-style privilege escalation analysis"""
+        findings = await self._advanced.analyze_privilege_escalation(root_path)
+        for finding in findings:
+            self.add_finding(finding)
+        return findings
+
+    # Property accessors for advanced analysis results
+
+    @property
+    def services(self):
+        """Get detected services"""
+        return self._advanced.services
+
+    @property
+    def software_packages(self):
+        """Get detected software packages"""
+        return self._advanced.packages
+
+    @property
+    def custom_binaries(self):
+        """Get detected custom binaries"""
+        return self._advanced.custom_binaries
+
+    def export_markdown_report(self, output_path: Path, firmware_name: str = "Unknown") -> bool:
+        """Export comprehensive markdown report"""
+        try:
+            from datetime import datetime
+
+            lines = [
+                "# Firmware Security Analysis Report",
+                "",
+                f"**Firmware:** {firmware_name}",
+                f"**Analysis Date:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                f"**Files Scanned:** {len(self._scanned_files):,}",
+                "",
+                "---",
+                "",
+            ]
+
+            # Executive Summary
+            lines.extend([
+                "## Executive Summary",
+                "",
+                f"This report presents the security analysis results for `{firmware_name}`. "
+                f"The analysis identified **{len(self.findings)} security findings** across multiple categories.",
+                "",
+            ])
+
+            # Severity breakdown
+            critical = sum(1 for f in self.findings if f.severity == Severity.CRITICAL)
+            high = sum(1 for f in self.findings if f.severity == Severity.HIGH)
+            medium = sum(1 for f in self.findings if f.severity == Severity.MEDIUM)
+            low = sum(1 for f in self.findings if f.severity == Severity.LOW)
+            info = sum(1 for f in self.findings if f.severity == Severity.INFO)
+
+            lines.extend([
+                "### Findings by Severity",
+                "",
+                "| Severity | Count |",
+                "|----------|-------|",
+                f"| 🔴 Critical | {critical} |",
+                f"| 🟠 High | {high} |",
+                f"| 🟡 Medium | {medium} |",
+                f"| 🟢 Low | {low} |",
+                f"| ℹ️  Info | {info} |",
+                f"| **Total** | **{len(self.findings)}** |",
+                "",
+            ])
+
+            # Services section
+            if self.services:
+                lines.extend([
+                    "## Detected Services",
+                    "",
+                    f"Found **{len(self.services)} services** running on the system:",
+                    "",
+                ])
+
+                # Group by type
+                by_type = {}
+                for service in self.services:
+                    if service.type not in by_type:
+                        by_type[service.type] = []
+                    by_type[service.type].append(service)
+
+                for svc_type, services in sorted(by_type.items()):
+                    lines.extend([
+                        f"### {svc_type.title()} Services",
+                        "",
+                        "| Service | Status | Config Path |",
+                        "|---------|--------|-------------|",
+                    ])
+                    for svc in services:
+                        status = "✅ Enabled" if svc.enabled else "❌ Disabled"
+                        config = str(svc.config_path) if svc.config_path else "N/A"
+                        lines.append(f"| `{svc.name}` | {status} | `{config}` |")
+                    lines.append("")
+
+            # Software packages section
+            if self.software_packages:
+                lines.extend([
+                    "## Installed Software Packages",
+                    "",
+                    f"Found **{len(self.software_packages)} packages** installed:",
+                    "",
+                ])
+
+                # Group by source
+                by_source = {}
+                for pkg in self.software_packages:
+                    if pkg.source not in by_source:
+                        by_source[pkg.source] = []
+                    by_source[pkg.source].append(pkg)
+
+                for source, packages in sorted(by_source.items()):
+                    lines.extend([
+                        f"### {source.upper()} Packages ({len(packages)})",
+                        "",
+                        "| Package | Version |",
+                        "|---------|---------|",
+                    ])
+                    for pkg in sorted(packages, key=lambda p: p.name)[:50]:  # Limit to 50
+                        lines.append(f"| `{pkg.name}` | `{pkg.version}` |")
+                    if len(packages) > 50:
+                        lines.append(f"| ... | *{len(packages) - 50} more packages* |")
+                    lines.append("")
+
+            # Custom binaries section
+            if self.custom_binaries:
+                lines.extend([
+                    "## Custom Binaries for Reverse Engineering",
+                    "",
+                    f"Identified **{len(self.custom_binaries)} custom binaries** for deeper analysis in Ghidra:",
+                    "",
+                ])
+
+                # Filter interesting ones (those with strings or not stripped)
+                interesting = [b for b in self.custom_binaries if b.interesting_strings or not b.stripped]
+
+                if interesting:
+                    lines.extend([
+                        "### Priority Binaries (with interesting strings)",
+                        "",
+                        "| Binary | Arch | Size | Stripped | Interesting Strings |",
+                        "|--------|------|------|----------|---------------------|",
+                    ])
+                    for binary in interesting[:20]:  # Top 20
+                        size_str = f"{binary.size:,} bytes"
+                        stripped = "Yes" if binary.stripped else "**No**"
+                        strings = ", ".join(binary.interesting_strings[:3]) if binary.interesting_strings else "None"
+                        if len(strings) > 60:
+                            strings = strings[:57] + "..."
+                        lines.append(f"| `{binary.path}` | {binary.arch} | {size_str} | {stripped} | {strings} |")
+                    lines.append("")
+
+                # Other binaries summary
+                other_count = len(self.custom_binaries) - len(interesting)
+                if other_count > 0:
+                    lines.extend([
+                        f"### Additional Binaries ({other_count})",
+                        "",
+                        f"Plus {other_count} other binaries (stripped, no immediately interesting strings).",
+                        "",
+                    ])
+
+            # Findings section
+            lines.extend([
+                "## Security Findings",
+                "",
+            ])
+
+            # Group findings by severity
+            for severity in [Severity.CRITICAL, Severity.HIGH, Severity.MEDIUM, Severity.LOW, Severity.INFO]:
+                severity_findings = [f for f in self.findings if f.severity == severity]
+                if not severity_findings:
+                    continue
+
+                emoji = {
+                    Severity.CRITICAL: "🔴",
+                    Severity.HIGH: "🟠",
+                    Severity.MEDIUM: "🟡",
+                    Severity.LOW: "🟢",
+                    Severity.INFO: "ℹ️",
+                }[severity]
+
+                lines.extend([
+                    f"### {emoji} {severity.value.upper()} ({len(severity_findings)})",
+                    "",
+                ])
+
+                # Group by category
+                by_category = {}
+                for finding in severity_findings:
+                    if finding.category not in by_category:
+                        by_category[finding.category] = []
+                    by_category[finding.category].append(finding)
+
+                for category, findings in sorted(by_category.items()):
+                    lines.extend([
+                        f"#### {category.replace('_', ' ').title()}",
+                        "",
+                    ])
+
+                    for finding in findings[:10]:  # Limit to 10 per category
+                        lines.append(f"**{finding.title}**")
+                        lines.append(f"> {finding.description}")
+                        if finding.file_path:
+                            location = f"`{finding.file_path}`"
+                            if finding.line_number:
+                                location += f" (line {finding.line_number})"
+                            lines.append(f"> Location: {location}")
+                        if finding.matched_text:
+                            match_preview = finding.matched_text[:100]
+                            if len(finding.matched_text) > 100:
+                                match_preview += "..."
+                            lines.append(f"> Match: `{match_preview}`")
+                        lines.append("")
+
+                    if len(findings) > 10:
+                        lines.append(f"*... and {len(findings) - 10} more {category} findings*")
+                        lines.append("")
+
+            # Recommendations section
+            lines.extend([
+                "## Recommendations",
+                "",
+            ])
+
+            # Generate smart recommendations based on findings
+            recommendations = []
+
+            if critical > 0 or high > 0:
+                recommendations.append("🔴 **Critical/High Priority**: Address critical and high severity findings immediately, especially credential exposures and vulnerable software versions.")
+
+            if any(f.category == "vulnerable_software" for f in self.findings):
+                recommendations.append("🔄 **Update Software**: Several packages with known vulnerabilities were detected. Update to the latest stable versions.")
+
+            if any(f.category == "service" for f in self.findings):
+                recommendations.append("🔒 **Harden Services**: Review service configurations, especially those running as root without systemd hardening.")
+
+            if self.custom_binaries:
+                interesting_bins = [b for b in self.custom_binaries if b.interesting_strings or not b.stripped]
+                if interesting_bins:
+                    recommendations.append(f"🔬 **Reverse Engineering**: {len(interesting_bins)} binaries identified for detailed analysis in Ghidra (see Custom Binaries section).")
+
+            if any(f.category == "scheduled_task" for f in self.findings):
+                recommendations.append("⏰ **Review Scheduled Tasks**: Examine cron jobs and startup scripts for suspicious network activity or privilege escalation.")
+
+            if any(f.category == "credentials" for f in self.findings):
+                recommendations.append("🔑 **Credential Management**: Hardcoded credentials detected. Implement secure credential storage and rotation.")
+
+            if not recommendations:
+                recommendations.append("✅ No critical issues identified. Continue monitoring and regular security assessments.")
+
+            for i, rec in enumerate(recommendations, 1):
+                lines.append(f"{i}. {rec}")
+            lines.append("")
+
+            # Footer
+            lines.extend([
+                "---",
+                "",
+                "*Report generated by hwh (Hardware Hacking Toolkit)*",
+                "",
+                f"*Total findings: {len(self.findings)} | Files scanned: {len(self._scanned_files):,}*",
+            ])
+
+            # Write report
+            output_path.write_text("\n".join(lines))
+            return True
+
+        except Exception as e:
+            self._log(f"[!] Failed to generate markdown report: {e}")
+            return False

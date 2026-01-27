@@ -478,12 +478,339 @@ def glitch_campaign(config_file, device):
 def tui():
     """Launch interactive TUI (Terminal User Interface)."""
     try:
-        from hwh.tui.app import run_tui
+        from .tui.app import run_tui
         run_tui()
     except ImportError as e:
         click.echo(f"Error: {e}", err=True)
         click.echo("Make sure textual is installed: pip install textual")
         return 1
+
+
+# --------------------------------------------------------------------------
+# Firmware Commands
+# --------------------------------------------------------------------------
+
+@cli.group()
+def firmware():
+    """Firmware extraction and analysis."""
+    pass
+
+
+@firmware.command('extract')
+@click.argument('firmware_path', type=click.Path(exists=True))
+@click.option('-o', '--output', type=click.Path(), help='Output directory (default: <firmware>_extracted)')
+@click.option('-v', '--verbose', is_flag=True, help='Verbose output')
+def firmware_extract(firmware_path, output, verbose):
+    """Extract filesystems from firmware image.
+
+    Supports: SquashFS, JFFS2, UBIFS, CPIO, TAR, ZIP, u-boot uImages
+
+    Example:
+        hwh firmware extract router.bin
+        hwh firmware extract camera_fw.zip -o extracted/
+    """
+    import asyncio
+    from .firmware.extractor import FirmwareExtractor
+
+    def progress(msg):
+        if verbose or not msg.startswith('[DEBUG]'):
+            click.echo(msg)
+
+    async def extract():
+        extractor = FirmwareExtractor(progress_callback=progress)
+
+        # Check dependencies
+        deps = extractor.check_dependencies()
+        missing = extractor.get_missing_tools()
+        if missing:
+            click.echo(f"Warning: Missing recommended tools: {', '.join(missing)}", err=True)
+            click.echo("Install with: brew install binwalk sasquatch squashfs-tools", err=True)
+            click.echo("              pip install jefferson ubi_reader", err=True)
+            click.echo("")
+
+        # Load firmware
+        if not await extractor.load_firmware(firmware_path):
+            click.echo("Failed to load firmware", err=True)
+            return 1
+
+        # Scan for filesystems
+        filesystems = await extractor.scan()
+        if not filesystems:
+            click.echo("No extractable filesystems found", err=True)
+            return 1
+
+        # Extract all
+        result = await extractor.extract_all()
+
+        if result.success:
+            click.echo("")
+            click.echo("=" * 60)
+            click.echo("EXTRACTION COMPLETE")
+            click.echo("=" * 60)
+            click.echo(f"Output directory: {result.output_dir}")
+            click.echo(f"Extracted: {result.extracted_count}/{len(result.filesystems)} filesystems")
+
+            # Show filesystem roots
+            roots = extractor.get_extracted_roots()
+            if roots:
+                click.echo(f"\nFilesystem roots ({len(roots)}):")
+                for root in roots:
+                    file_count = sum(1 for _ in root.rglob('*') if _.is_file())
+                    click.echo(f"  {root.name}/  ({file_count} files)")
+
+            return 0
+        else:
+            click.echo(f"Extraction failed: {result.error}", err=True)
+            return 1
+
+    return asyncio.run(extract())
+
+
+@firmware.command('analyze')
+@click.argument('path', type=click.Path(exists=True))
+@click.option('--creds-only', is_flag=True, help='Scan for credentials only')
+@click.option('--export', type=click.Choice(['txt', 'json', 'csv', 'md']), help='Export format')
+@click.option('-o', '--output', type=click.Path(), help='Export output file')
+@click.option('-v', '--verbose', is_flag=True, help='Verbose output')
+def firmware_analyze(path, creds_only, export, output, verbose):
+    """Analyze extracted firmware for security issues.
+
+    Scans for:
+    - Hardcoded credentials (passwords, API keys)
+    - Private keys and certificates
+    - Unsafe functions in binaries
+    - Configuration files with secrets
+
+    Example:
+        hwh firmware analyze router_extracted/
+        hwh firmware analyze router_extracted/ --creds-only
+        hwh firmware analyze router_extracted/ --export json -o findings.json
+    """
+    import asyncio
+    from .firmware.analyzer import SecurityAnalyzer, Severity, AnalysisResult
+
+    def progress(msg):
+        if verbose or not msg.startswith('[DEBUG]'):
+            click.echo(msg)
+
+    async def analyze():
+        analyzer = SecurityAnalyzer(progress_callback=progress)
+
+        click.echo(f"Analyzing: {path}")
+        click.echo("")
+
+        # Run analysis
+        if creds_only:
+            # Just run credential scan
+            await analyzer.find_credentials(Path(path))
+            result = AnalysisResult(
+                root_path=Path(path),
+                findings=analyzer.findings,
+                files_scanned=len(analyzer._scanned_files)
+            )
+        else:
+            result = await analyzer.analyze_all(Path(path))
+
+        if not result.findings:
+            click.echo("No security findings.")
+            return 0
+
+        # Group by severity
+        by_severity = {
+            Severity.CRITICAL: [],
+            Severity.HIGH: [],
+            Severity.MEDIUM: [],
+            Severity.LOW: [],
+            Severity.INFO: []
+        }
+
+        for finding in result.findings:
+            by_severity[finding.severity].append(finding)
+
+        # Display results
+        click.echo("=" * 60)
+        click.echo("SECURITY FINDINGS")
+        click.echo("=" * 60)
+        click.echo(f"Total: {len(result.findings)} findings")
+        click.echo("")
+
+        for severity in [Severity.CRITICAL, Severity.HIGH, Severity.MEDIUM, Severity.LOW, Severity.INFO]:
+            findings = by_severity[severity]
+            if findings:
+                color = {
+                    Severity.CRITICAL: 'red',
+                    Severity.HIGH: 'red',
+                    Severity.MEDIUM: 'yellow',
+                    Severity.LOW: 'yellow',
+                    Severity.INFO: 'blue'
+                }.get(severity, 'white')
+
+                click.secho(f"\n{severity.value.upper()} ({len(findings)}):", fg=color, bold=True)
+                for finding in findings[:10]:  # Show first 10
+                    click.echo(f"  [{finding.category}] {finding.title}")
+                    click.echo(f"    {finding.description}")
+                    if finding.file_path:
+                        click.echo(f"    File: {finding.file_path}")
+                    if finding.line_number:
+                        click.echo(f"    Line: {finding.line_number}")
+                    if finding.matched_text:
+                        text_preview = finding.matched_text[:80] + "..." if len(finding.matched_text) > 80 else finding.matched_text
+                        click.echo(f"    Match: {text_preview}")
+
+                if len(findings) > 10:
+                    click.echo(f"  ... and {len(findings) - 10} more")
+
+        # Show summary of detected items
+        if analyzer.services or analyzer.software_packages or analyzer.custom_binaries:
+            click.echo("")
+            click.echo("=" * 60)
+            click.echo("ANALYSIS SUMMARY")
+            click.echo("=" * 60)
+
+            if analyzer.services:
+                click.echo(f"\nServices Detected: {len(analyzer.services)}")
+                for service in analyzer.services[:10]:
+                    status = "enabled" if service.enabled else "disabled"
+                    click.echo(f"  [{service.type}] {service.name} ({status})")
+                if len(analyzer.services) > 10:
+                    click.echo(f"  ... and {len(analyzer.services) - 10} more")
+
+            if analyzer.software_packages:
+                click.echo(f"\nSoftware Packages: {len(analyzer.software_packages)}")
+                for pkg in analyzer.software_packages[:15]:
+                    click.echo(f"  {pkg.name} {pkg.version} (via {pkg.source})")
+                if len(analyzer.software_packages) > 15:
+                    click.echo(f"  ... and {len(analyzer.software_packages) - 15} more")
+
+            if analyzer.custom_binaries:
+                click.echo(f"\nCustom Binaries for Ghidra: {len(analyzer.custom_binaries)}")
+                # Show interesting ones (those with interesting strings)
+                interesting = [b for b in analyzer.custom_binaries if b.interesting_strings][:10]
+                for binary in interesting:
+                    click.echo(f"  {binary.path} ({binary.arch}, {binary.size:,} bytes)")
+                    if binary.interesting_strings:
+                        strings = ', '.join(binary.interesting_strings[:2])
+                        click.echo(f"    Strings: {strings}")
+                if len(interesting) > 10:
+                    click.echo(f"  ... and {len(interesting) - 10} more interesting binaries")
+                elif len(analyzer.custom_binaries) > len(interesting):
+                    click.echo(f"  Plus {len(analyzer.custom_binaries) - len(interesting)} other binaries")
+
+        # Export if requested
+        if export and output:
+            output_path = Path(output)
+            if export == 'json':
+                import json
+                data = {
+                    'firmware_path': str(path),
+                    'total_findings': len(result.findings),
+                    'by_severity': {s.value: len(by_severity[s]) for s in Severity},
+                    'findings': [
+                        {
+                            'severity': f.severity.value,
+                            'category': f.category,
+                            'title': f.title,
+                            'description': f.description,
+                            'file_path': str(f.file_path) if f.file_path else None,
+                            'line_number': f.line_number,
+                            'matched_text': f.matched_text
+                        }
+                        for f in result.findings
+                    ]
+                }
+                output_path.write_text(json.dumps(data, indent=2))
+            elif export == 'csv':
+                import csv
+                with open(output_path, 'w', newline='') as f:
+                    writer = csv.writer(f)
+                    writer.writerow(['Severity', 'Category', 'Title', 'Description', 'File', 'Line', 'Match'])
+                    for finding in result.findings:
+                        writer.writerow([
+                            finding.severity.value,
+                            finding.category,
+                            finding.title,
+                            finding.description,
+                            str(finding.file_path) if finding.file_path else '',
+                            finding.line_number or '',
+                            finding.matched_text or ''
+                        ])
+            elif export == 'md':
+                # Export markdown report
+                firmware_name = Path(path).name
+                success = analyzer.export_markdown_report(output_path, firmware_name)
+                if not success:
+                    click.echo("Failed to export markdown report", err=True)
+                    return 1
+            else:  # txt
+                with open(output_path, 'w') as f:
+                    f.write("FIRMWARE SECURITY ANALYSIS\n")
+                    f.write("=" * 60 + "\n")
+                    f.write(f"Firmware: {path}\n")
+                    f.write(f"Total findings: {len(result.findings)}\n\n")
+
+                    for severity in [Severity.CRITICAL, Severity.HIGH, Severity.MEDIUM, Severity.LOW, Severity.INFO]:
+                        findings = by_severity[severity]
+                        if findings:
+                            f.write(f"\n{severity.value} ({len(findings)})\n")
+                            f.write("-" * 40 + "\n")
+                            for finding in findings:
+                                f.write(f"[{finding.category}] {finding.title}\n")
+                                f.write(f"  {finding.description}\n")
+                                if finding.file_path:
+                                    f.write(f"  File: {finding.file_path}\n")
+                                if finding.line_number:
+                                    f.write(f"  Line: {finding.line_number}\n")
+                                if finding.matched_text:
+                                    f.write(f"  Match: {finding.matched_text}\n")
+                                f.write("\n")
+
+            click.echo(f"\nFindings exported to: {output_path}")
+
+        return 0
+
+    return asyncio.run(analyze())
+
+
+@firmware.command('info')
+@click.argument('firmware_path', type=click.Path(exists=True))
+def firmware_info(firmware_path):
+    """Show information about a firmware file.
+
+    Example:
+        hwh firmware info router.bin
+    """
+    import asyncio
+    from .firmware.extractor import FirmwareExtractor
+
+    async def show_info():
+        extractor = FirmwareExtractor()
+
+        if await extractor.load_firmware(firmware_path):
+            filesystems = await extractor.scan()
+
+            file_path = Path(firmware_path)
+            size = file_path.stat().st_size
+
+            click.echo(f"Firmware: {file_path.name}")
+            click.echo(f"Size: {size:,} bytes ({size / 1024 / 1024:.2f} MB)")
+
+            # Check file type
+            with open(file_path, 'rb') as f:
+                magic = f.read(16).hex()
+            click.echo(f"Magic: {magic[:32]}...")
+
+            if filesystems:
+                click.echo(f"\nFilesystems found: {len(filesystems)}")
+                for fs in filesystems:
+                    size_str = f"{fs.size:,} bytes" if fs.size else "unknown size"
+                    click.echo(f"  0x{fs.offset:08X}  {fs.fs_type.value:12s}  {size_str}")
+            else:
+                click.echo("\nNo filesystems detected")
+                click.echo("Try: binwalk <file> for manual inspection")
+
+        return 0
+
+    return asyncio.run(show_info())
 
 
 # --------------------------------------------------------------------------
@@ -497,8 +824,8 @@ def shell():
         from IPython import embed
 
         # Import useful things into namespace
-        from hwh import detect, list_devices, get_backend
-        from hwh.backends import SPIConfig, I2CConfig, UARTConfig, GlitchConfig
+        from . import detect, list_devices, get_backend
+        from .backends import SPIConfig, I2CConfig, UARTConfig, GlitchConfig
 
         devices = detect()
 
