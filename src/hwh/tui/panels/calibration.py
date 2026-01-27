@@ -373,16 +373,38 @@ class CalibrationPanel(Container):
         """Run the actual calibration procedure."""
         try:
             from ...automation.calibration import GlitchCalibrator, CalibrationProfile
+            from ...backends.base import GlitchConfig
 
             # Create calibrator
-            # For Bolt, we need the scope object
+            # For Bolt, we need to wrap the scope to match backend interface
             glitch_backend = None
             la_backend = None
 
             if hasattr(device_panel, '_scope') and device_panel._scope:
-                # Bolt panel with scope library
-                glitch_backend = device_panel._scope
-                la_backend = device_panel._scope
+                # Bolt panel with scope library - create adapter
+                scope = device_panel._scope
+
+                # Create a simple adapter that implements the backend interface
+                class ScopeAdapter:
+                    def __init__(self, scope):
+                        self.scope = scope
+
+                    def configure_glitch(self, config: GlitchConfig) -> bool:
+                        """Adapt GlitchConfig to scope API"""
+                        # Convert nanoseconds to cycles (8.3ns per cycle for Bolt)
+                        width_cycles = int(config.width_ns / 8.3)
+                        offset_cycles = int(config.offset_ns / 8.3)
+                        self.scope.glitch.repeat = width_cycles
+                        self.scope.glitch.ext_offset = offset_cycles
+                        return True
+
+                    def trigger(self):
+                        """Trigger a glitch"""
+                        self.scope.trigger()
+
+                adapter = ScopeAdapter(scope)
+                glitch_backend = adapter
+                la_backend = scope  # LA functions work directly on scope
                 self._log("Using Bolt scope for calibration")
             else:
                 # Simulation mode
