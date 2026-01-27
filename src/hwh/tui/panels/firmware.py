@@ -425,6 +425,15 @@ class FirmwarePanel(Container):
             self.extracted_roots = [p]
             self.current_root = p
             await self._build_file_tree()
+
+            # Auto-switch to Browse tab when loading a directory
+            try:
+                tabs = self.query_one("#firmware-tabs", TabbedContent)
+                tabs.active = "tab-browse"
+                self._log_output("[*] Switched to Browse tab - directory ready to explore")
+            except Exception as e:
+                self._log_output(f"[DEBUG] Could not switch tab: {e}")
+
             self._update_status(f"Loaded directory: {p.name}")
             self._update_action("Directory loaded - browse files directly")
             return True
@@ -562,9 +571,18 @@ class FirmwarePanel(Container):
                 self._log_output(f"[DEBUG] Set current_root to: {self.current_root}")
                 await self._update_extracted_roots()
                 await self._build_file_tree()
+
+                # Auto-switch to Browse tab after successful extraction
+                try:
+                    tabs = self.query_one("#firmware-tabs", TabbedContent)
+                    tabs.active = "tab-browse"
+                    self._log_output("[*] Switched to Browse tab - filesystem ready to explore")
+                except Exception as e:
+                    self._log_output(f"[DEBUG] Could not switch tab: {e}")
+
                 self._update_action(f"Extracted {result.extracted_count} filesystem(s), {result.total_files} files")
                 self._update_status(f"Extracted: {self.firmware_path.name}")
-                self._log_output("[*] Next: Browse files or run security scans")
+                self._log_output("[*] Browse files or run security scans")
             else:
                 self._log_output("[!] No extracted roots found after extraction")
                 self._update_action("Extraction completed but no files found")
@@ -1006,6 +1024,14 @@ class FirmwarePanel(Container):
                         self.current_root = browse_path
                         self.extracted_roots = [browse_path]
                         await self._build_file_tree()
+
+                        # Auto-switch to Browse tab when using browse command
+                        try:
+                            tabs = self.query_one("#firmware-tabs", TabbedContent)
+                            tabs.active = "tab-browse"
+                        except Exception as e:
+                            self._log_output(f"[DEBUG] Could not switch tab: {e}")
+
                         self._log_output(f"[+] Browsing: {browse_path}")
                     else:
                         self._log_output("[!] Path is not a directory")
@@ -1198,6 +1224,14 @@ Export:
                 if root.name == root_name:
                     self.current_root = root
                     await self._build_file_tree()
+
+                    # Auto-switch to Browse tab when clicking Browse button
+                    try:
+                        tabs = self.query_one("#firmware-tabs", TabbedContent)
+                        tabs.active = "tab-browse"
+                    except Exception as e:
+                        self._log_output(f"[DEBUG] Could not switch tab: {e}")
+
                     self._log_output(f"[*] Browsing: {root.name}")
                     break
 
