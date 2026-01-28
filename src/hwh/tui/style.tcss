@@ -123,15 +123,24 @@ Tab.-active {
 
 .status-indicator {
     width: 2;
-    color: #B13840;
+    text-style: bold;
 }
 
+/* Status indicator semantic colors */
 .status-connected {
-    color: #5E99AE;
+    color: #4CAF50;  /* Green = Connected and active */
 }
 
 .status-disconnected {
-    color: #B13840;
+    color: #B3B8BB;  /* Gray = Disconnected or inactive */
+}
+
+.status-connecting {
+    color: #FFA726;  /* Yellow = Connecting/busy */
+}
+
+.status-error {
+    color: #B13840;  /* Red = Error state */
 }
 
 .device-name {
