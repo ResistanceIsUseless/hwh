@@ -1,3 +1,8 @@
+---
+name: hwh-development
+description: Specialized knowledge for hardware hacking toolkit development including backend implementation, TUI patterns, and protocol handlers.
+---
+
 # HWH Tool Development Skill
 
 > SKILL.md for developing the hwh (Hardware Hacking Toolkit) project

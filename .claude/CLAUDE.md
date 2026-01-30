@@ -18,6 +18,7 @@ hwh              # or: python -m hwh tui
 # Run tests
 pytest
 pytest tests/test_cli.py -v  # single test file
+pytest tests/test_tui.py -v  # TUI tests
 
 # Code quality
 black src/
@@ -28,13 +29,22 @@ mypy src/
 
 # CLI Commands
 hwh devices                    # List connected devices
+hwh devices --json             # JSON output for scripting
+hwh devices --all              # Include unknown devices
 hwh spi dump -d "Bus Pirate 5" -o dump.bin  # Dump SPI flash
 hwh glitch sweep --device "Curious Bolt" --width 100-500  # Glitch sweep
+hwh firmware extract firmware.bin           # Extract filesystems
+hwh firmware analyze extracted_dir/         # Analyze for vulnerabilities
 
-# Debug Scripts
+# Debug Scripts (for development/troubleshooting)
 python scripts/test_bpio2_status.py /dev/cu.usbmodem6buspirate3  # Test BPIO2 connection
 python scripts/test_bp_sump.py /dev/cu.usbmodem6buspirate3       # Test logic analyzer
+python scripts/test_bpio2_uart.py /dev/cu.usbmodem6buspirate3    # Test UART functionality
 python scripts/debug_startup.py                                   # Debug TUI startup
+
+# Docker (for isolated testing)
+docker build -t hwh .
+docker run -it --privileged -v /dev:/dev hwh
 ```
 
 ## Architecture
@@ -54,7 +64,8 @@ src/hwh/
 │   ├── backend_blackmagic.py # Black Magic Probe backend
 │   ├── backend_tilink.py  # TI-Link backend (MSP-FET, XDS)
 │   ├── backend_faultycat.py # FaultyCat EMFI glitcher backend
-│   └── sump.py            # SUMP protocol for logic analyzers
+│   ├── sump.py            # SUMP protocol for logic analyzers
+│   └── BACKEND_TODO.md    # Backend implementation status and roadmap
 ├── pybpio/                # Bundled BPIO2 FlatBuffers library for Bus Pirate 5/6
 │   ├── bpio_client.py     # BPIOClient class (serial + COBS + FlatBuffers)
 │   ├── bpio_spi.py        # SPI protocol handler
@@ -65,7 +76,15 @@ src/hwh/
 ├── tooling/               # Device-specific tooling
 │   └── bolt/              # Curious Bolt scope utilities
 ├── firmware/              # Firmware extraction and analysis (binwalk integration)
+│   ├── extractor.py       # Filesystem extraction engine
+│   ├── analyzer.py        # Basic security scanning
+│   ├── analyzer_advanced.py # LinPEAS-style privilege escalation checks
+│   ├── patterns.py        # Regex patterns for vulnerability detection
+│   └── types.py           # Shared types and dataclasses
 ├── automation/            # High-level automation utilities (UART interaction, etc.)
+├── coordination/          # Multi-device trigger routing
+│   ├── coordinator.py     # Coordinator class for device orchestration
+│   └── triggers.py        # Trigger conditions and actions
 ├── tui/
 │   ├── app.py             # Main Textual TUI application
 │   ├── device_pool.py     # Manages connected device instances
@@ -73,6 +92,7 @@ src/hwh/
 │   ├── campaign.py        # Glitch campaign management
 │   ├── conditions.py      # Response classification (SUC/RST/HNG/NRM)
 │   ├── style.tcss         # Metagross-inspired color scheme
+│   ├── REDESIGN.md        # TUI redesign documentation
 │   └── panels/            # Device-specific UI panels
 │       ├── base.py        # DevicePanel base class + PanelCapability enum
 │       ├── buspirate.py   # Bus Pirate panel (SPI, I2C, UART, Protocol modes)
@@ -85,6 +105,7 @@ src/hwh/
 │       ├── firmware.py    # Firmware analysis panel (F2)
 │       ├── calibration.py # Glitch calibration panel (F6)
 │       ├── logic_analyzer.py # Logic analyzer widget (SUMP waveforms)
+│       ├── protocol_decoders.py # SPI/I2C/UART protocol decoders
 │       └── uart_monitor.py   # Generic UART monitor panel
 └── workflows/             # Multi-device coordinated workflows
     ├── base.py            # Workflow, WorkflowStatus, WorkflowResult
@@ -105,6 +126,12 @@ All device backends inherit from abstract base classes in `backends/base.py`:
 
 **Example**: `BusPirateBackend` inherits from `BusBackend` and implements SPI/I2C/UART using the bundled `pybpio` library, with fallback to serial terminal commands when BPIO2 is unavailable.
 
+**Implementation Status**: See `backends/BACKEND_TODO.md` for detailed completion status of each backend. Key points:
+- BusPirateBackend: ~70% complete (SPI/I2C/UART working, flash operations are stubs)
+- BoltBackend: ~60% complete (native library required, serial fallback incomplete)
+- TigardBackend: ~40% complete (basic protocols working, OpenOCD integration needed)
+- FaultyCatBackend, TILinkBackend, BlackMagicBackend: Need creation
+
 ### Device Detection
 
 `detect.py` contains:
@@ -116,6 +143,12 @@ All device backends inherit from abstract base classes in `backends/base.py`:
 
 **Device Tabs**: Each connected device gets a dedicated tab with a device-specific panel (`tui/panels/`). Panels inherit from `DevicePanel` and declare capabilities via `PanelCapability` enum (SPI, I2C, UART, GLITCH, etc.).
 
+**Multi-Device Support**: The TUI was completely redesigned to support multiple simultaneous device connections. See `tui/REDESIGN.md` for details on:
+- Device list sidebar with status indicators (● connected, ○ disconnected)
+- Per-device connection management
+- Adaptive controls based on device capabilities
+- glitch-o-bolt inspired styling
+
 **Split View**: `SplitView` container shows two device panels side-by-side. Uses `SplitPanelMirror` to avoid duplicate connections - mirrors subscribe to output events from the source panel.
 
 **Worker Pattern**: Critical for non-blocking hardware I/O. Use `@work(thread=True)` for all serial/USB operations:
@@ -125,11 +158,13 @@ All device backends inherit from abstract base classes in `backends/base.py`:
 def serial_reader(self, port: str) -> None:
     worker = get_current_worker()
     ser = serial.Serial(port, 115200, timeout=0.1)
-    while not worker.is_cancelled:
-        data = ser.read(1024)
-        if data:
-            self.call_from_thread(self.handle_rx, data)
-    ser.close()
+    try:
+        while not worker.is_cancelled:
+            data = ser.read(1024)
+            if data:
+                self.call_from_thread(self.handle_rx, data)
+    finally:
+        ser.close()
 ```
 
 **Device Pool**: `DevicePool` manages active backend instances, ensuring only one connection per device. Panels request backends from the pool.
@@ -138,6 +173,7 @@ def serial_reader(self, port: str) -> None:
 - Left panel: UART monitor for target output
 - Right panel: Glitcher controls (arm/trigger/disarm)
 - Bottom panel: Logic analyzer waveform display
+- Note: Hardware integration still in progress, UI complete
 
 ### BPIO2 Protocol (Bus Pirate 5/6)
 
@@ -148,6 +184,7 @@ def serial_reader(self, port: str) -> None:
   - `buspirate3`: BPIO2 binary interface (3000000 baud)
 - **Protocol Handlers**: `bpio_spi.py`, `bpio_i2c.py`, `bpio_uart.py` wrap FlatBuffers operations
 - **Limitation**: UART mode not implemented in BPIO2 firmware - backend falls back to terminal commands
+- **Testing**: Use `scripts/test_bpio2_status.py` to verify BPIO2 connectivity
 
 ### SUMP Logic Analyzer
 
@@ -157,6 +194,8 @@ The SUMP protocol (`backends/sump.py`) provides logic analyzer functionality for
 - **Devices**: Bus Pirate 5/6, Curious Bolt (when in logic analyzer mode)
 - **Features**: 8-channel capture, configurable sample rate, trigger support
 - **Widget**: `tui/panels/logic_analyzer.py` provides waveform visualization
+- **Decoders**: `tui/panels/protocol_decoders.py` implements SPI, I2C, UART protocol decoding
+- **Testing**: Use `scripts/test_bp_sump.py` to test logic analyzer functionality
 
 ### Workflows System
 
@@ -171,18 +210,30 @@ Example: Glitch STM32 while monitoring UART for success condition.
 ### Firmware Analysis
 
 Pipeline in `firmware/`:
-- **`extractor.py`**: Binwalk integration for filesystem extraction (SquashFS, JFFS2, UBIFS, CPIO, TAR, ZIP)
-- **`analyzer.py`**: Security scanning (credentials, hardcoded keys, unsafe functions in ELF binaries)
+- **`extractor.py`**: Binwalk integration for filesystem extraction (SquashFS, JFFS2, UBIFS, CPIO, TAR, ZIP, uImage)
+- **`analyzer.py`**: Basic security scanning (credentials, hardcoded keys, unsafe functions in ELF binaries)
+- **`analyzer_advanced.py`**: Advanced LinPEAS-style checks:
+  - SUID/SGID binaries
+  - Writable system paths
+  - Sudo configuration analysis
+  - Cron jobs and scheduled tasks
+  - Init scripts and services
+  - Software inventory (opkg, dpkg, rpm)
+  - Weak file permissions
 - **`patterns.py`**: Regex patterns for vulnerability detection
 
 **Firmware Panel (F2)** provides:
 - Load firmware files (.bin, .img) or extracted directories
 - Automatic filesystem detection and extraction
-- Nested archive handling (archives within archives)
+- Nested archive handling (archives within archives, including uImage)
 - Lazy-loading file browser for large filesystems
 - Security pattern search (credentials, API keys, private keys, backdoors)
-- Binary analysis (unsafe functions, buffer overflows)
-- Export findings to TXT, JSON, or CSV
+- Binary analysis (unsafe functions, buffer overflows, custom binaries)
+- Service detection (systemd, init.d, xinetd)
+- Software inventory with version information
+- Privilege escalation vector detection
+- Scheduled task analysis
+- Export findings to TXT, JSON, CSV, or Markdown
 
 **Commands** (in Firmware panel):
 ```
@@ -190,17 +241,23 @@ load <path>     - Load firmware file or directory
 browse          - Open file browser
 scan            - Scan for filesystems
 extract         - Extract all filesystems
-analyze         - Run full security scan
+analyze         - Run full security scan (basic + advanced)
 creds           - Scan for credentials only
 search <regex>  - Custom pattern search
-export [format] - Export findings (txt/json/csv)
+export [format] - Export findings (txt/json/csv/md)
 debug           - Toggle debug logging
 ```
 
 **Dependencies** (optional but recommended):
 ```bash
+# Core extraction tools
 brew install binwalk sasquatch squashfs-tools
+
+# Additional format support
 pip install jefferson ubi_reader
+
+# Vulnerability scanning (optional)
+brew install nuclei
 ```
 
 ## TUI Key Bindings
@@ -233,6 +290,8 @@ Multi-device trigger routing for coordinated attacks:
 3. Configure trigger: UART pattern "login:" → Bolt glitch
 4. Click "ARM COORDINATOR" to start monitoring
 5. Glitch triggers automatically when pattern detected in UART stream
+
+**Note**: UI complete, hardware integration in progress.
 
 ### Calibration Mode (F6)
 
@@ -295,6 +354,26 @@ hwh glitch test --device "Curious Bolt" \
   --width 350 --offset 500
 ```
 
+### Firmware Analysis
+```bash
+# Extract firmware
+hwh firmware extract router.bin
+# Output: router_extracted/
+
+# Analyze extracted filesystem
+hwh firmware analyze router_extracted/squashfs-root/
+
+# Generate comprehensive markdown report
+hwh firmware analyze router_extracted/squashfs-root/ \
+  --export md -o security-report.md
+
+# Verbose output for debugging
+hwh firmware analyze path/ -v
+
+# Export as JSON for automation
+hwh firmware analyze path/ --export json -o findings.json
+```
+
 ### Automation Python API
 
 ```python
@@ -320,6 +399,7 @@ print(report.summary())
 - **Only BP5 and BP6 supported** - older versions (v3, v4) are NOT supported
 - **Use BPIO2 interface** - binary CDC interface (`buspirate3` port), NOT the terminal interface
 - **UART limitation**: UART BPIO2 not implemented in firmware - use terminal fallback
+- **Testing**: Debug scripts available in `scripts/` directory for troubleshooting
 - **Documentation**: https://docs.buspirate.com/docs/binmode-reference/protocol-bpio2/
 
 ## Hardware Protocol Quick Reference
@@ -503,11 +583,42 @@ if device.vid == 0x2E8A and device.pid == 0x000A:
         return DeviceInfo(name="FaultyCat", device_type="faultycat", ...)
 ```
 
+### Testing
+
+**Unit Tests**: Located in `tests/` directory
+- `test_cli.py`: CLI command tests
+- `test_tui.py`: TUI application tests
+- Backend tests should mock hardware dependencies
+
+**Integration Tests**: Require actual hardware
+- Use debug scripts in `scripts/` for manual hardware testing
+- Mock backends available for testing without hardware
+
+**Running Tests**:
+```bash
+pytest                    # Run all tests
+pytest tests/test_cli.py -v  # Single test file with verbose output
+pytest -k "test_name"     # Run specific test
+```
+
 ## Configuration
 
 - User config: `~/.config/hwh/config.toml`
 - Never hardcode paths, regex patterns, or magic values
 - Use config file for all configurable parameters
+
+Example configuration:
+```toml
+[devices]
+auto_connect = ["Bus Pirate 5", "Curious Bolt"]
+
+[glitch]
+default_width = 350
+default_repeat = 1000
+
+[ui]
+theme = "dark"
+```
 
 ## Git Workflow
 
@@ -518,7 +629,7 @@ if device.vid == 0x2E8A and device.pid == 0x000A:
 
 ## Reference Code
 
-The `temp/` directory contains reference implementations (not shipped with package):
+The `temp/` directory (if present) contains reference implementations (not shipped with package):
 
 | Directory | Description |
 |-----------|-------------|
@@ -528,6 +639,24 @@ The `temp/` directory contains reference implementations (not shipped with packa
 | `temp/bp5-firmware/` | Bus Pirate 5 firmware source (PIO, pin definitions) |
 | `temp/glitch-o-bolt/` | Glitch-o-Bolt TUI reference (design inspiration) |
 
+## Development Priorities
+
+When adding new features or backends, refer to `backends/BACKEND_TODO.md` for:
+- Backend completion status
+- Implementation priorities
+- Required dependencies
+- Testing requirements
+
+**Recommended Priority Order**:
+1. Complete BoltBackend serial fallback (most users won't have native library)
+2. Complete BusPirateBackend flash operations (common use case)
+3. Create FaultyCatBackend (relatively simple serial protocol)
+4. Create BlackMagicBackend (pygdbmi makes this straightforward)
+5. Complete TigardBackend OpenOCD integration
+6. Create TILinkBackend (niche but useful)
+7. Add protocol decoders for logic analyzer
+8. Build flash chip database
+
 ## External Documentation
 
 **Black Magic Probe**: https://black-magic.org/getting-started.html
@@ -535,3 +664,4 @@ The `temp/` directory contains reference implementations (not shipped with packa
 **Curious Bolt**: https://bolt.curious.supplies/docs/getting-started/
 **Tigard**: https://github.com/tigard-tools/tigard
 **STM32 Debug**: https://stm32-base.org/guides/connecting-your-debugger.html
+**Textual Framework**: https://textual.textualize.io/
