@@ -27,6 +27,7 @@ from .patterns import (
 )
 from .types import Finding, Severity, AnalysisResult
 from .analyzer_advanced import AdvancedAnalyzer
+from .sbom import SBOMGenerator, generate_sbom
 
 
 class SecurityAnalyzer:
@@ -84,8 +85,15 @@ class SecurityAnalyzer:
         await self.analyze_software_versions(root_path)
         await self.find_custom_binaries(root_path)
         await self.analyze_scheduled_tasks(root_path)
-        await self.run_nuclei_scan(root_path)
         await self.analyze_privilege_escalation(root_path)
+
+        # Advanced security checks
+        await self.analyze_binary_hardening(root_path)
+        await self.analyze_network_security(root_path)
+        await self.analyze_crypto_weaknesses(root_path)
+
+        # Optional external scanner (may timeout)
+        await self.run_nuclei_scan(root_path)
 
         duration = time.time() - start_time
 
@@ -615,6 +623,63 @@ class SecurityAnalyzer:
         for finding in findings:
             self.add_finding(finding)
         return findings
+
+    async def analyze_binary_hardening(self, root_path: Path) -> List[Finding]:
+        """Check ELF binaries for security hardening (PIE, RELRO, NX, Canary)"""
+        findings = await self._advanced.analyze_binary_hardening(root_path)
+        for finding in findings:
+            self.add_finding(finding)
+        return findings
+
+    async def analyze_network_security(self, root_path: Path) -> List[Finding]:
+        """Analyze network configuration for security issues"""
+        findings = await self._advanced.analyze_network_security(root_path)
+        for finding in findings:
+            self.add_finding(finding)
+        return findings
+
+    async def analyze_crypto_weaknesses(self, root_path: Path) -> List[Finding]:
+        """Check for cryptographic weaknesses"""
+        findings = await self._advanced.analyze_crypto_weaknesses(root_path)
+        for finding in findings:
+            self.add_finding(finding)
+        return findings
+
+    async def generate_sbom(
+        self,
+        root_path: Path,
+        firmware_name: str = "Unknown",
+        include_files: bool = True,
+        max_files: int = 500
+    ) -> SBOMGenerator:
+        """
+        Generate Software Bill of Materials (SBOM) in SPDX format.
+
+        Args:
+            root_path: Path to extracted firmware root
+            firmware_name: Name for SBOM document
+            include_files: Whether to include file checksums
+            max_files: Maximum files to include
+
+        Returns:
+            SBOMGenerator with populated SBOM data
+        """
+        self._log("[*] Generating Software Bill of Materials (SBOM)...")
+
+        # Make sure we have package info
+        if not self._advanced.packages:
+            await self.analyze_software_versions(root_path)
+
+        sbom = await generate_sbom(
+            root_path=root_path,
+            packages=self._advanced.packages,
+            firmware_name=firmware_name,
+            include_files=include_files,
+            max_files=max_files
+        )
+
+        self._log(f"[+] SBOM generated: {len(sbom.packages)} packages, {len(sbom.files)} files")
+        return sbom
 
     # Property accessors for advanced analysis results
 

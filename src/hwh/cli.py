@@ -813,6 +813,189 @@ def firmware_info(firmware_path):
     return asyncio.run(show_info())
 
 
+@firmware.command('sbom')
+@click.argument('path', type=click.Path(exists=True))
+@click.option('-o', '--output', type=click.Path(), help='Output file (default: <name>.spdx.json)')
+@click.option('--format', 'fmt', type=click.Choice(['json', 'tv']), default='json',
+              help='Output format: json (SPDX JSON) or tv (Tag-Value)')
+@click.option('--no-files', is_flag=True, help='Exclude file checksums (faster)')
+@click.option('--max-files', type=int, default=500, help='Max files to include')
+@click.option('-v', '--verbose', is_flag=True, help='Verbose output')
+def firmware_sbom(path, output, fmt, no_files, max_files, verbose):
+    """Generate Software Bill of Materials (SBOM) in SPDX format.
+
+    Generates an SBOM from extracted firmware, including:
+    - Detected software packages (opkg, dpkg)
+    - File checksums (SHA256, SHA1, MD5)
+    - CPE references for vulnerability correlation
+    - Package URLs (PURL) for package managers
+
+    Example:
+        hwh firmware sbom ./router_extracted -o router.spdx.json
+        hwh firmware sbom ./firmware_root --format tv -o router.spdx
+        hwh firmware sbom ./extracted --no-files  # Skip file hashing
+    """
+    import asyncio
+    from .firmware.analyzer import SecurityAnalyzer
+
+    def progress(msg):
+        if verbose:
+            click.echo(msg)
+
+    async def generate():
+        path_obj = Path(path)
+
+        if not path_obj.is_dir():
+            click.echo(f"[!] Path must be a directory (extracted firmware root)")
+            return 1
+
+        # Determine output filename
+        if output:
+            output_path = Path(output)
+        else:
+            ext = '.spdx.json' if fmt == 'json' else '.spdx'
+            output_path = path_obj.parent / f"{path_obj.name}{ext}"
+
+        click.echo(f"[*] Generating SBOM for: {path}")
+        click.echo(f"[*] Output: {output_path}")
+        click.echo("")
+
+        analyzer = SecurityAnalyzer(progress_callback=progress)
+
+        # Generate SBOM
+        sbom = await analyzer.generate_sbom(
+            root_path=path_obj,
+            firmware_name=path_obj.name,
+            include_files=not no_files,
+            max_files=max_files
+        )
+
+        # Export
+        if fmt == 'json':
+            success = sbom.export_spdx_json(output_path)
+        else:
+            success = sbom.export_spdx_tv(output_path)
+
+        if success:
+            click.echo("")
+            click.echo(f"[+] SBOM GENERATED SUCCESSFULLY")
+            click.echo(f"[+] Packages: {len(sbom.packages)}")
+            click.echo(f"[+] Files: {len(sbom.files)}")
+            click.echo(f"[+] Output: {output_path}")
+            return 0
+        else:
+            click.echo(f"[!] Failed to write SBOM")
+            return 1
+
+    return asyncio.run(generate())
+
+
+@firmware.command('hardening')
+@click.argument('path', type=click.Path(exists=True))
+@click.option('--export', type=click.Choice(['txt', 'json']), help='Export format')
+@click.option('-o', '--output', type=click.Path(), help='Export output file')
+@click.option('-v', '--verbose', is_flag=True, help='Verbose output')
+def firmware_hardening(path, export, output, verbose):
+    """Check binary security hardening (PIE, RELRO, NX, Canary).
+
+    Analyzes ELF binaries in extracted firmware for security hardening:
+    - PIE (Position Independent Executable) for ASLR
+    - RELRO (Relocation Read-Only) for GOT protection
+    - NX (No-Execute stack) to prevent shellcode
+    - Stack Canary for buffer overflow protection
+    - FORTIFY_SOURCE for runtime checks
+
+    Example:
+        hwh firmware hardening ./router_extracted
+        hwh firmware hardening ./extracted --export json -o hardening.json
+    """
+    import asyncio
+    import json
+    from .firmware.analyzer import SecurityAnalyzer
+
+    def progress(msg):
+        if verbose:
+            click.echo(msg)
+
+    async def check_hardening():
+        path_obj = Path(path)
+
+        if not path_obj.is_dir():
+            click.echo(f"[!] Path must be a directory (extracted firmware root)")
+            return 1
+
+        click.echo(f"[*] Checking binary hardening in: {path}")
+        click.echo("")
+
+        analyzer = SecurityAnalyzer(progress_callback=progress)
+        findings = await analyzer.analyze_binary_hardening(path_obj)
+
+        # Count by severity
+        by_severity = {}
+        for f in findings:
+            sev = f.severity.value
+            by_severity[sev] = by_severity.get(sev, 0) + 1
+
+        click.echo("")
+        click.echo("[+] BINARY HARDENING ANALYSIS COMPLETE")
+        click.echo("")
+
+        if findings:
+            click.echo(f"Found {len(findings)} hardening issues:")
+            for sev, count in sorted(by_severity.items()):
+                click.echo(f"  {sev.upper()}: {count}")
+            click.echo("")
+
+            # Group by binary
+            by_binary = {}
+            for f in findings:
+                binary = str(f.file_path)
+                if binary not in by_binary:
+                    by_binary[binary] = []
+                by_binary[binary].append(f)
+
+            click.echo("Issues by binary:")
+            for binary, issues in sorted(by_binary.items()):
+                click.echo(f"\n  {binary}:")
+                for issue in issues:
+                    click.echo(f"    - {issue.matched_text}")
+        else:
+            click.echo("No hardening issues found - binaries appear well-protected!")
+
+        # Export if requested
+        if export and output:
+            output_path = Path(output)
+            if export == 'json':
+                data = {
+                    'summary': by_severity,
+                    'findings': [
+                        {
+                            'severity': f.severity.value,
+                            'binary': str(f.file_path),
+                            'issue': f.title,
+                            'description': f.description,
+                        }
+                        for f in findings
+                    ]
+                }
+                with open(output_path, 'w') as f:
+                    json.dump(data, f, indent=2)
+            else:
+                with open(output_path, 'w') as f:
+                    f.write("Binary Hardening Analysis Report\n")
+                    f.write("=" * 40 + "\n\n")
+                    for finding in findings:
+                        f.write(f"[{finding.severity.value}] {finding.title}\n")
+                        f.write(f"  File: {finding.file_path}\n")
+                        f.write(f"  {finding.description}\n\n")
+
+            click.echo(f"\n[+] Exported to: {output_path}")
+
+        return 0
+
+    return asyncio.run(check_hardening())
+
+
 # --------------------------------------------------------------------------
 # Interactive Shell
 # --------------------------------------------------------------------------
