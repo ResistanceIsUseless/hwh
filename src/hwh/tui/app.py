@@ -686,7 +686,11 @@ class HwhApp(App):
                 entry = Horizontal(classes="device-entry")
                 await device_list.mount(entry)
 
-                # Status indicator (● connected, ○ disconnected)
+                # Status indicator with proper symbols
+                # ● Green = Connected and active
+                # ○ Gray = Disconnected
+                # ◐ Yellow = Connecting (TODO: implement connecting state)
+                # ✗ Red = Error (TODO: implement error state)
                 status_symbol = "●" if is_connected else "○"
                 status_class = "status-connected" if is_connected else "status-disconnected"
                 await entry.mount(Static(status_symbol, classes=f"status-indicator {status_class}"))
@@ -744,6 +748,14 @@ class HwhApp(App):
             self.notify(f"Device not found: {device_id}", severity="error")
             return
 
+        # Show loading state
+        try:
+            connect_btn = self.query_one(f"#connect-{device_id}", Button)
+            connect_btn.label = "⟳ Connecting..."
+            connect_btn.disabled = True
+        except:
+            pass
+
         try:
             # Get appropriate panel class
             panel_class = self._get_panel_class(device_info)
@@ -771,18 +783,22 @@ class HwhApp(App):
             if success:
                 # Switch to new tab
                 tabs.active = tab_id
-                self.notify(f"Connected to {device_info.name}")
+                self.notify(f"✓ Connected to {device_info.name}", severity="information")
             else:
                 # Remove tab on failure
                 await tabs.remove_pane(tab_id)
                 del self.connected_panels[device_id]
-                self.notify(f"Failed to connect to {device_info.name}", severity="error")
+                self.notify(f"✗ Failed to connect to {device_info.name}", severity="error")
 
             # Update device list
             await self._update_device_list_ui()
 
         except Exception as e:
-            self.notify(f"Connection error: {e}", severity="error")
+            # Clean up on error
+            if device_id in self.connected_panels:
+                del self.connected_panels[device_id]
+            self.notify(f"✗ Connection error: {e}", severity="error")
+            await self._update_device_list_ui()
 
     async def disconnect_device(self, device_id: str) -> None:
         """Disconnect from a device and remove its tab"""

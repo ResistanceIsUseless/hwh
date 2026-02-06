@@ -1492,12 +1492,25 @@ Available commands:
             self.log_output("[!] Not connected")
             return
 
+        # Show confirmation modal for destructive action
+        from ..widgets import ConfirmationModal
+        confirmed = await self.app.push_screen(ConfirmationModal(
+            title="Erase Flash Sector?",
+            message="This will permanently erase a 4KB sector at address 0x000000.\nThis action cannot be undone.\n\nAre you sure you want to continue?",
+            confirm_text="Erase Sector",
+            cancel_text="Cancel",
+            confirm_variant="error"
+        ))
+
+        if not confirmed:
+            self.log_output("[*] Erase cancelled")
+            return
+
         try:
             # Ensure we're in SPI mode
             if self.current_mode != "SPI":
                 await self._change_mode("SPI")
 
-            self.log_output("[!] WARNING: This will erase flash data!")
             self.log_output("[*] Erasing 4KB sector at address 0x000000...")
 
             # Progress callback
@@ -1516,12 +1529,12 @@ Available commands:
             )
 
             if success:
-                self.log_output("[+] Sector erase complete")
+                self.log_output("[+] ✓ Sector erase complete")
             else:
-                self.log_output("[!] Erase failed")
+                self.log_output("[!] ✗ Erase failed")
 
         except Exception as e:
-            self.log_output(f"[!] SPI erase error: {e}")
+            self.log_output(f"[!] ✗ SPI erase error: {e}")
 
     async def _spi_write_flash(self) -> None:
         """Write data to SPI flash from file"""
