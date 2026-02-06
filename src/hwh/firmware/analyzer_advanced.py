@@ -954,3 +954,759 @@ class AdvancedAnalyzer:
                 pass
 
         return findings
+
+    # =========================================================================
+    # Binary Hardening Analysis
+    # =========================================================================
+
+    async def analyze_binary_hardening(self, root_path: Path) -> List[Finding]:
+        """
+        Check ELF binaries for security hardening features.
+
+        Checks for:
+        - PIE (Position Independent Executable)
+        - RELRO (Relocation Read-Only)
+        - Stack Canaries
+        - NX (No-Execute stack)
+        - FORTIFY_SOURCE
+        """
+        self._log("[*] Analyzing binary security hardening...")
+        findings = []
+
+        # Find ELF binaries
+        elf_binaries = []
+        for binary_path in root_path.rglob("*"):
+            if not binary_path.is_file():
+                continue
+            try:
+                with open(binary_path, 'rb') as f:
+                    magic = f.read(4)
+                if magic == b'\x7fELF':
+                    elf_binaries.append(binary_path)
+            except Exception:
+                continue
+
+        self._log(f"[*] Found {len(elf_binaries)} ELF binaries to analyze")
+
+        analyzed = 0
+        for binary_path in elf_binaries:
+            # Skip very large binaries
+            if binary_path.stat().st_size > 50 * 1024 * 1024:  # 50MB
+                continue
+
+            hardening = await self._check_binary_hardening(binary_path)
+            if hardening:
+                rel_path = binary_path.relative_to(root_path)
+
+                # Report missing hardening as findings
+                if not hardening.get('pie', True):
+                    findings.append(Finding(
+                        severity=Severity.MEDIUM,
+                        category="binary_hardening",
+                        title=f"No PIE: {binary_path.name}",
+                        description="Binary is not position-independent, making ASLR less effective",
+                        file_path=rel_path,
+                        matched_text="PIE: disabled"
+                    ))
+
+                if not hardening.get('relro', True):
+                    findings.append(Finding(
+                        severity=Severity.MEDIUM,
+                        category="binary_hardening",
+                        title=f"No RELRO: {binary_path.name}",
+                        description="Binary lacks RELRO, GOT entries are writable",
+                        file_path=rel_path,
+                        matched_text="RELRO: none"
+                    ))
+                elif hardening.get('relro') == 'partial':
+                    findings.append(Finding(
+                        severity=Severity.LOW,
+                        category="binary_hardening",
+                        title=f"Partial RELRO: {binary_path.name}",
+                        description="Binary has partial RELRO, consider full RELRO",
+                        file_path=rel_path,
+                        matched_text="RELRO: partial"
+                    ))
+
+                if not hardening.get('nx', True):
+                    findings.append(Finding(
+                        severity=Severity.HIGH,
+                        category="binary_hardening",
+                        title=f"Executable stack (No NX): {binary_path.name}",
+                        description="Stack is executable, allowing shellcode execution",
+                        file_path=rel_path,
+                        matched_text="NX: disabled"
+                    ))
+
+                if not hardening.get('canary', True):
+                    findings.append(Finding(
+                        severity=Severity.MEDIUM,
+                        category="binary_hardening",
+                        title=f"No Stack Canary: {binary_path.name}",
+                        description="Binary lacks stack canary protection against buffer overflows",
+                        file_path=rel_path,
+                        matched_text="Stack Canary: disabled"
+                    ))
+
+                analyzed += 1
+                if analyzed >= 100:  # Limit to first 100 binaries
+                    self._log("[*] Analyzed 100 binaries, stopping...")
+                    break
+
+        self._log(f"[+] Analyzed {analyzed} binaries for hardening")
+        return findings
+
+    async def _check_binary_hardening(self, binary_path: Path) -> Optional[Dict]:
+        """Check hardening features of a single ELF binary"""
+        try:
+            with open(binary_path, 'rb') as f:
+                elf_data = f.read(min(f.seek(0, 2), 65536))  # Read up to 64KB
+                f.seek(0)
+
+            hardening = {
+                'pie': False,
+                'relro': 'none',
+                'nx': True,  # Assume NX unless we find executable stack
+                'canary': False,
+                'fortify': False,
+            }
+
+            # Parse ELF header
+            if len(elf_data) < 52:
+                return None
+
+            # Check ELF type (offset 16-17)
+            e_type = int.from_bytes(elf_data[16:18], 'little')
+            # 2 = ET_EXEC (not PIE), 3 = ET_DYN (PIE or shared lib)
+            hardening['pie'] = (e_type == 3)
+
+            # Check for stack canary by looking for __stack_chk_fail
+            if b'__stack_chk_fail' in elf_data:
+                hardening['canary'] = True
+
+            # Check for FORTIFY_SOURCE by looking for _chk functions
+            fortify_funcs = [b'__printf_chk', b'__sprintf_chk', b'__strcpy_chk',
+                           b'__memcpy_chk', b'__strcat_chk']
+            if any(func in elf_data for func in fortify_funcs):
+                hardening['fortify'] = True
+
+            # Use readelf to get more accurate info if available
+            detailed = await self._run_readelf(binary_path)
+            if detailed:
+                hardening.update(detailed)
+
+            return hardening
+
+        except Exception:
+            return None
+
+    async def _run_readelf(self, binary_path: Path) -> Optional[Dict]:
+        """Use readelf to get detailed hardening info"""
+        try:
+            # Check for GNU_RELRO
+            result = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: subprocess.run(
+                    ['readelf', '-l', str(binary_path)],
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+            )
+
+            info = {}
+            if result.returncode == 0:
+                output = result.stdout
+
+                # Check for RELRO
+                if 'GNU_RELRO' in output:
+                    info['relro'] = 'partial'
+                    # Full RELRO also has BIND_NOW
+                    if 'BIND_NOW' in output or '(NOW)' in output:
+                        info['relro'] = 'full'
+                else:
+                    info['relro'] = 'none'
+
+                # Check for GNU_STACK
+                if 'GNU_STACK' in output:
+                    # Look for RWE (read-write-execute)
+                    lines = output.split('\n')
+                    for line in lines:
+                        if 'GNU_STACK' in line:
+                            if 'RWE' in line or ' E' in line.split('GNU_STACK')[0]:
+                                info['nx'] = False
+                            else:
+                                info['nx'] = True
+                            break
+
+            return info if info else None
+
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            return None
+
+    # =========================================================================
+    # Network Security Analysis
+    # =========================================================================
+
+    async def analyze_network_security(self, root_path: Path) -> List[Finding]:
+        """
+        Analyze network configuration for security issues.
+
+        Checks for:
+        - HTTP-only web servers (no TLS)
+        - Open debug ports (Telnet, FTP)
+        - UPnP enabled
+        - Weak firewall rules
+        - Default network credentials
+        """
+        self._log("[*] Analyzing network security configuration...")
+        findings = []
+
+        # Check for HTTP-only web server configs
+        findings.extend(await self._check_http_only_servers(root_path))
+
+        # Check for debug ports in service configs
+        findings.extend(await self._check_debug_ports(root_path))
+
+        # Check for UPnP
+        findings.extend(await self._check_upnp(root_path))
+
+        # Check for WPA/WiFi credentials
+        findings.extend(await self._check_wifi_credentials(root_path))
+
+        # Check for default network credentials
+        findings.extend(await self._check_default_network_creds(root_path))
+
+        return findings
+
+    async def _check_http_only_servers(self, root_path: Path) -> List[Finding]:
+        """Check for web servers not using TLS"""
+        findings = []
+
+        web_configs = [
+            ("etc/nginx/nginx.conf", "nginx"),
+            ("etc/nginx/sites-enabled/*", "nginx"),
+            ("etc/nginx/conf.d/*.conf", "nginx"),
+            ("etc/apache2/apache2.conf", "apache"),
+            ("etc/apache2/sites-enabled/*", "apache"),
+            ("etc/lighttpd/lighttpd.conf", "lighttpd"),
+            ("etc/httpd/conf/httpd.conf", "apache"),
+            ("etc/uhttpd/*", "uhttpd"),
+            ("etc/config/uhttpd", "uhttpd"),
+        ]
+
+        for config_pattern, server_type in web_configs:
+            for config_file in root_path.glob(config_pattern):
+                if not config_file.is_file():
+                    continue
+
+                try:
+                    content = config_file.read_text(errors="ignore")
+
+                    # Check if listening on port 80 without corresponding 443
+                    has_http = re.search(r'listen\s+.*:?80\b', content) or \
+                               re.search(r'Listen\s+80\b', content) or \
+                               re.search(r"option\s+listen_http.*'0\.0\.0\.0:80'", content)
+
+                    has_https = re.search(r'listen\s+.*:?443\b', content) or \
+                                re.search(r'Listen\s+443\b', content) or \
+                                re.search(r'ssl\s+(on|enable)', content, re.I) or \
+                                re.search(r"option\s+listen_https", content)
+
+                    if has_http and not has_https:
+                        findings.append(Finding(
+                            severity=Severity.MEDIUM,
+                            category="network_security",
+                            title=f"HTTP-only web server: {server_type}",
+                            description=f"{server_type} configured to listen on HTTP without HTTPS",
+                            file_path=config_file.relative_to(root_path),
+                            matched_text="Port 80 without TLS"
+                        ))
+
+                    # Check for self-signed certificate warnings disabled
+                    if re.search(r'ssl_verify\s*(off|false|0)', content, re.I):
+                        findings.append(Finding(
+                            severity=Severity.HIGH,
+                            category="network_security",
+                            title="SSL verification disabled",
+                            description="SSL certificate verification is disabled",
+                            file_path=config_file.relative_to(root_path),
+                            matched_text="ssl_verify off"
+                        ))
+
+                except Exception:
+                    pass
+
+        return findings
+
+    async def _check_debug_ports(self, root_path: Path) -> List[Finding]:
+        """Check for dangerous debug ports enabled"""
+        findings = []
+
+        # Patterns for debug service detection
+        debug_patterns = {
+            "telnet": (r'telnetd?\s+(start|enable|=\s*1)', Severity.HIGH,
+                      "Telnet service enabled - transmits credentials in cleartext"),
+            "ftp": (r'(?:vs)?ftpd?\s+(start|enable|=\s*1)', Severity.HIGH,
+                   "FTP service enabled - transmits credentials in cleartext"),
+            "tftp": (r'tftpd?\s+(start|enable|=\s*1)', Severity.MEDIUM,
+                    "TFTP service enabled - no authentication"),
+            "rsh": (r'rsh[d]?\s+(start|enable|=\s*1)', Severity.CRITICAL,
+                   "RSH service enabled - extremely insecure"),
+            "rlogin": (r'rlogin[d]?\s+(start|enable|=\s*1)', Severity.CRITICAL,
+                      "Rlogin service enabled - extremely insecure"),
+            "debug_port": (r'debug[_-]?port\s*[=:]\s*\d+', Severity.HIGH,
+                          "Debug port configured - potential backdoor"),
+        }
+
+        # Search in common config locations
+        config_patterns = [
+            "etc/inetd.conf",
+            "etc/xinetd.d/*",
+            "etc/config/*",
+            "etc/init.d/*",
+            "etc/rc.local",
+            "etc/default/*",
+        ]
+
+        for pattern in config_patterns:
+            for config_file in root_path.glob(pattern):
+                if not config_file.is_file():
+                    continue
+
+                try:
+                    content = config_file.read_text(errors="ignore").lower()
+
+                    for service, (regex, severity, desc) in debug_patterns.items():
+                        if re.search(regex, content, re.I):
+                            findings.append(Finding(
+                                severity=severity,
+                                category="network_security",
+                                title=f"{service.upper()} service detected",
+                                description=desc,
+                                file_path=config_file.relative_to(root_path),
+                                matched_text=service
+                            ))
+
+                except Exception:
+                    pass
+
+        return findings
+
+    async def _check_upnp(self, root_path: Path) -> List[Finding]:
+        """Check for UPnP enabled"""
+        findings = []
+
+        upnp_patterns = [
+            "etc/config/upnpd",
+            "etc/miniupnpd.conf",
+            "etc/upnpd.conf",
+        ]
+
+        for pattern in upnp_patterns:
+            upnp_file = root_path / pattern
+            if upnp_file.exists():
+                try:
+                    content = upnp_file.read_text(errors="ignore")
+
+                    # Check if enabled
+                    if re.search(r'enable\s*[=:]\s*(1|true|yes)', content, re.I):
+                        findings.append(Finding(
+                            severity=Severity.MEDIUM,
+                            category="network_security",
+                            title="UPnP service enabled",
+                            description="UPnP can be used to open firewall ports from the LAN",
+                            file_path=upnp_file.relative_to(root_path),
+                            matched_text="UPnP enabled"
+                        ))
+
+                except Exception:
+                    pass
+
+        return findings
+
+    async def _check_wifi_credentials(self, root_path: Path) -> List[Finding]:
+        """Check for hardcoded WiFi credentials"""
+        findings = []
+
+        wifi_configs = [
+            "etc/wpa_supplicant.conf",
+            "etc/wpa_supplicant/*.conf",
+            "etc/config/wireless",
+            "etc/hostapd.conf",
+            "etc/hostapd/*.conf",
+        ]
+
+        for pattern in wifi_configs:
+            for config_file in root_path.glob(pattern):
+                if not config_file.is_file():
+                    continue
+
+                try:
+                    content = config_file.read_text(errors="ignore")
+
+                    # Check for WPA PSK
+                    psk_match = re.search(r'(psk|wpa_passphrase)\s*[=:]\s*["\']?([^"\'\n]+)', content, re.I)
+                    if psk_match:
+                        # Don't report if it's a hash (64 hex chars)
+                        psk = psk_match.group(2)
+                        if len(psk) != 64 or not all(c in '0123456789abcdefABCDEF' for c in psk):
+                            findings.append(Finding(
+                                severity=Severity.HIGH,
+                                category="network_security",
+                                title="Hardcoded WiFi password",
+                                description="WiFi password found in configuration",
+                                file_path=config_file.relative_to(root_path),
+                                matched_text=f"{psk_match.group(1)}=***"
+                            ))
+
+                    # Check for weak encryption
+                    if re.search(r'auth_algs\s*[=:]\s*1', content) or \
+                       re.search(r'wep_key', content, re.I):
+                        findings.append(Finding(
+                            severity=Severity.CRITICAL,
+                            category="network_security",
+                            title="WEP encryption detected",
+                            description="WEP is cryptographically broken",
+                            file_path=config_file.relative_to(root_path),
+                            matched_text="WEP encryption"
+                        ))
+
+                except Exception:
+                    pass
+
+        return findings
+
+    async def _check_default_network_creds(self, root_path: Path) -> List[Finding]:
+        """Check for default network service credentials"""
+        findings = []
+
+        # Default credential patterns
+        default_creds = [
+            (r'community\s*[=:]\s*["\']?public["\']?', "SNMP public community string"),
+            (r'community\s*[=:]\s*["\']?private["\']?', "SNMP private community string"),
+            (r'password\s*[=:]\s*["\']?(admin|root|password|1234|default)["\']?', "Default password"),
+            (r'auth[_-]?pass\s*[=:]\s*["\']?(admin|root|password)["\']?', "Default auth password"),
+        ]
+
+        config_files = list(root_path.glob("etc/**/*.conf")) + \
+                       list(root_path.glob("etc/config/*"))
+
+        for config_file in config_files:
+            if not config_file.is_file():
+                continue
+
+            try:
+                content = config_file.read_text(errors="ignore")
+
+                for pattern, description in default_creds:
+                    if re.search(pattern, content, re.I):
+                        findings.append(Finding(
+                            severity=Severity.HIGH,
+                            category="network_security",
+                            title=f"Default credentials: {description}",
+                            description=description,
+                            file_path=config_file.relative_to(root_path),
+                            matched_text=re.search(pattern, content, re.I).group(0)
+                        ))
+
+            except Exception:
+                pass
+
+        return findings
+
+    # =========================================================================
+    # Cryptographic Weakness Detection
+    # =========================================================================
+
+    async def analyze_crypto_weaknesses(self, root_path: Path) -> List[Finding]:
+        """
+        Check for cryptographic weaknesses.
+
+        Checks for:
+        - Weak key sizes
+        - Deprecated algorithms (MD5, SHA1, DES, RC4)
+        - Self-signed certificates
+        - Default/shared SSL keys
+        - Hardcoded encryption keys
+        """
+        self._log("[*] Analyzing cryptographic configurations...")
+        findings = []
+
+        # Check SSL/TLS certificates
+        findings.extend(await self._check_certificates(root_path))
+
+        # Check for weak crypto in configs
+        findings.extend(await self._check_weak_crypto_configs(root_path))
+
+        # Check for default/shared SSH host keys
+        findings.extend(await self._check_default_ssh_keys(root_path))
+
+        # Check for hardcoded encryption keys
+        findings.extend(await self._check_hardcoded_crypto_keys(root_path))
+
+        return findings
+
+    async def _check_certificates(self, root_path: Path) -> List[Finding]:
+        """Check SSL certificates for issues"""
+        findings = []
+
+        cert_patterns = [
+            "etc/ssl/certs/*.pem",
+            "etc/ssl/certs/*.crt",
+            "etc/ssl/private/*.key",
+            "etc/nginx/ssl/*",
+            "etc/apache2/ssl/*",
+            "etc/pki/**/*.pem",
+            "etc/pki/**/*.crt",
+            "usr/share/ca-certificates/**/*.crt",
+        ]
+
+        for pattern in cert_patterns:
+            for cert_file in root_path.glob(pattern):
+                if not cert_file.is_file():
+                    continue
+
+                try:
+                    content = cert_file.read_text(errors="ignore")
+
+                    # Check for self-signed certificate
+                    if '-----BEGIN CERTIFICATE-----' in content:
+                        # Try to detect self-signed by checking issuer == subject
+                        cert_info = await self._get_cert_info(cert_file)
+                        if cert_info:
+                            if cert_info.get('self_signed'):
+                                findings.append(Finding(
+                                    severity=Severity.MEDIUM,
+                                    category="crypto_weakness",
+                                    title=f"Self-signed certificate: {cert_file.name}",
+                                    description="Certificate is self-signed, may not be trusted by clients",
+                                    file_path=cert_file.relative_to(root_path),
+                                    matched_text="Self-signed"
+                                ))
+
+                            if cert_info.get('weak_key'):
+                                findings.append(Finding(
+                                    severity=Severity.HIGH,
+                                    category="crypto_weakness",
+                                    title=f"Weak key in certificate: {cert_file.name}",
+                                    description=f"Certificate uses weak key: {cert_info.get('key_info', 'unknown')}",
+                                    file_path=cert_file.relative_to(root_path),
+                                    matched_text=cert_info.get('key_info', '')
+                                ))
+
+                except Exception:
+                    pass
+
+        return findings
+
+    async def _get_cert_info(self, cert_file: Path) -> Optional[Dict]:
+        """Get certificate information using openssl"""
+        try:
+            # Get certificate subject and issuer
+            result = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: subprocess.run(
+                    ['openssl', 'x509', '-in', str(cert_file), '-noout',
+                     '-subject', '-issuer', '-text'],
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+            )
+
+            if result.returncode != 0:
+                return None
+
+            output = result.stdout
+            info = {}
+
+            # Check if self-signed (subject == issuer)
+            subject_match = re.search(r'subject=(.+)', output)
+            issuer_match = re.search(r'issuer=(.+)', output)
+            if subject_match and issuer_match:
+                subject = subject_match.group(1).strip()
+                issuer = issuer_match.group(1).strip()
+                info['self_signed'] = (subject == issuer)
+
+            # Check key size
+            if 'RSA Public-Key: (1024 bit)' in output or \
+               'RSA Public-Key: (512 bit)' in output:
+                info['weak_key'] = True
+                info['key_info'] = 'RSA < 2048 bits'
+            elif 'prime256v1' not in output and 'secp384r1' not in output:
+                # Check for weak EC curves
+                if 'EC PARAMETERS' in output and 'secp' not in output:
+                    info['weak_key'] = True
+                    info['key_info'] = 'Weak EC curve'
+
+            return info
+
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            return None
+
+    async def _check_weak_crypto_configs(self, root_path: Path) -> List[Finding]:
+        """Check configuration files for weak crypto settings"""
+        findings = []
+
+        # Weak crypto patterns
+        weak_patterns = [
+            (r'cipher\s*[=:]\s*["\']?(des|rc4|md5|sha1)["\']?', Severity.HIGH,
+             "Weak cipher algorithm"),
+            (r'ssl[_-]?protocols?\s*[=:]\s*.*SSLv[23]', Severity.CRITICAL,
+             "SSLv2/v3 enabled - vulnerable to POODLE"),
+            (r'ssl[_-]?protocols?\s*[=:]\s*.*TLSv1\.0', Severity.HIGH,
+             "TLSv1.0 enabled - considered weak"),
+            (r'allow[_-]?md5\s*[=:]\s*(true|yes|1)', Severity.MEDIUM,
+             "MD5 algorithm allowed"),
+            (r'allow[_-]?sha1\s*[=:]\s*(true|yes|1)', Severity.MEDIUM,
+             "SHA1 algorithm allowed for signatures"),
+            (r'DHE?[-_]?EXPORT', Severity.CRITICAL,
+             "Export-grade cryptography enabled - Logjam vulnerability"),
+        ]
+
+        config_files = list(root_path.glob("etc/**/*.conf")) + \
+                       list(root_path.glob("etc/config/*"))
+
+        for config_file in config_files:
+            if not config_file.is_file():
+                continue
+
+            try:
+                content = config_file.read_text(errors="ignore")
+
+                for pattern, severity, description in weak_patterns:
+                    match = re.search(pattern, content, re.I)
+                    if match:
+                        findings.append(Finding(
+                            severity=severity,
+                            category="crypto_weakness",
+                            title=description,
+                            description=f"Found in {config_file.name}",
+                            file_path=config_file.relative_to(root_path),
+                            matched_text=match.group(0)
+                        ))
+
+            except Exception:
+                pass
+
+        return findings
+
+    async def _check_default_ssh_keys(self, root_path: Path) -> List[Finding]:
+        """Check for default/shared SSH host keys"""
+        findings = []
+
+        ssh_key_paths = [
+            "etc/ssh/ssh_host_rsa_key",
+            "etc/ssh/ssh_host_dsa_key",
+            "etc/ssh/ssh_host_ecdsa_key",
+            "etc/ssh/ssh_host_ed25519_key",
+            "etc/dropbear/dropbear_rsa_host_key",
+            "etc/dropbear/dropbear_dss_host_key",
+            "etc/dropbear/dropbear_ecdsa_host_key",
+        ]
+
+        # Known default key fingerprints (examples - would need real database)
+        known_default_keys = {
+            # These would be populated with known default key fingerprints
+            # from vendor firmware
+        }
+
+        for key_path in ssh_key_paths:
+            key_file = root_path / key_path
+            if key_file.exists():
+                try:
+                    # Get key fingerprint
+                    result = await asyncio.get_event_loop().run_in_executor(
+                        None,
+                        lambda kf=key_file: subprocess.run(
+                            ['ssh-keygen', '-lf', str(kf)],
+                            capture_output=True,
+                            text=True,
+                            timeout=5
+                        )
+                    )
+
+                    if result.returncode == 0:
+                        fingerprint = result.stdout.strip()
+
+                        # Check against known defaults
+                        for known_fp, device in known_default_keys.items():
+                            if known_fp in fingerprint:
+                                findings.append(Finding(
+                                    severity=Severity.CRITICAL,
+                                    category="crypto_weakness",
+                                    title=f"Default SSH host key: {key_file.name}",
+                                    description=f"SSH key matches known default from {device}",
+                                    file_path=Path(key_path),
+                                    matched_text=fingerprint
+                                ))
+
+                        # Check for weak key types
+                        if 'DSA' in fingerprint or '1024' in fingerprint:
+                            findings.append(Finding(
+                                severity=Severity.HIGH,
+                                category="crypto_weakness",
+                                title=f"Weak SSH key: {key_file.name}",
+                                description="DSA or 1024-bit RSA key - considered weak",
+                                file_path=Path(key_path),
+                                matched_text=fingerprint
+                            ))
+
+                except (subprocess.TimeoutExpired, FileNotFoundError):
+                    pass
+
+        return findings
+
+    async def _check_hardcoded_crypto_keys(self, root_path: Path) -> List[Finding]:
+        """Check for hardcoded encryption keys in code/configs"""
+        findings = []
+
+        # Patterns for hardcoded keys
+        hardcoded_patterns = [
+            (r'aes[_-]?key\s*[=:]\s*["\']([0-9a-fA-F]{32,64})["\']', Severity.CRITICAL,
+             "Hardcoded AES key"),
+            (r'des[_-]?key\s*[=:]\s*["\']([0-9a-fA-F]{16})["\']', Severity.CRITICAL,
+             "Hardcoded DES key"),
+            (r'encryption[_-]?key\s*[=:]\s*["\']([^"\']{8,})["\']', Severity.HIGH,
+             "Hardcoded encryption key"),
+            (r'secret[_-]?key\s*[=:]\s*["\']([^"\']{16,})["\']', Severity.HIGH,
+             "Hardcoded secret key"),
+            (r'iv\s*[=:]\s*["\']([0-9a-fA-F]{16,32})["\']', Severity.HIGH,
+             "Hardcoded IV (Initialization Vector)"),
+        ]
+
+        # Search in common locations
+        search_patterns = [
+            "etc/**/*.conf",
+            "etc/config/*",
+            "usr/lib/**/*.lua",
+            "www/**/*.php",
+            "var/www/**/*.php",
+            "opt/**/*.py",
+        ]
+
+        for glob_pattern in search_patterns:
+            for file_path in root_path.glob(glob_pattern):
+                if not file_path.is_file() or file_path.stat().st_size > 1024 * 1024:
+                    continue
+
+                try:
+                    content = file_path.read_text(errors="ignore")
+
+                    for pattern, severity, description in hardcoded_patterns:
+                        match = re.search(pattern, content, re.I)
+                        if match:
+                            findings.append(Finding(
+                                severity=severity,
+                                category="crypto_weakness",
+                                title=description,
+                                description=f"Found hardcoded cryptographic material",
+                                file_path=file_path.relative_to(root_path),
+                                matched_text=f"{description}: ***"
+                            ))
+
+                except Exception:
+                    pass
+
+        return findings

@@ -7,6 +7,7 @@ for security vulnerabilities.
 
 from .extractor import FirmwareExtractor, FilesystemEntry
 from .analyzer import SecurityAnalyzer, Finding, Severity
+from .sbom import SBOMGenerator, generate_sbom
 from .patterns import (
     CREDENTIAL_PATTERNS,
     UNSAFE_FUNCTIONS,
@@ -20,6 +21,8 @@ __all__ = [
     "SecurityAnalyzer",
     "Finding",
     "Severity",
+    "SBOMGenerator",
+    "generate_sbom",
     "CREDENTIAL_PATTERNS",
     "UNSAFE_FUNCTIONS",
     "INTERESTING_FILES",
